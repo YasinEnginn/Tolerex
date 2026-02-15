@@ -1,28 +1,31 @@
-# Config Package (`internal/config`) ⚙️
+# Config Package (`internal/config`)
 
-This package handles the loading and validation of system-critical configurations, specifically the Replication Tolerance factor.
+This package loads and validates tolerance configuration used by leader startup.
 
-## Functionality
+## Tolerance Config
 
-### `tolerance.conf` Loader
-The system's fault tolerance (N) is defined in a simple key-value file.
-- **Format:** `TOLERANCE=N`
-- **Validation:**
-  - File must exist.
-  - N must be a positive integer > 0.
-  - Key must be exactly `TOLERANCE`.
+The tolerance value is read from a key-value file.
 
-## Testing (`config_test.go`)
+Format:
 
-Tests ensure the system fails fast (refuses to start) if the configuration is invalid.
-- **Valid Case:** `TOLERANCE=3` → Returns 3.
-- **Invalid Key:** `MY_VAL=3` → Returns Error.
-- **Invalid Value:** `TOLERANCE=-1` → Returns Error.
+- `TOLERANCE=N`
 
-## Running Tests 🚀
+Rules:
 
-To run the tests for this package, execute the following command from the project root:
+- File must exist.
+- Key must be exactly `TOLERANCE`.
+- `N` must be an integer greater than zero.
+
+## Tests
+
+`config_test.go` validates common cases:
+
+- Valid value is parsed correctly (`TOLERANCE=3`).
+- Invalid key fails (`MY_VAL=3`).
+- Invalid value fails (`TOLERANCE=-1`).
+
+Run:
 
 ```bash
-go test -v ./internal/config/...
+go test -v ./internal/config
 ```

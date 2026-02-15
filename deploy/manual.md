@@ -1,58 +1,59 @@
-# Tolerex Monitoring Setup
+# Tolerex Deploy and Monitoring
 
-This guide details the infrastructure for monitoring a Tolerex cluster using Prometheus and Grafana.
+This guide covers two deploy modes:
+
+- Monitoring-only (Leader/Member processes run on host)
+- Full Docker cluster (Leader + Members + Prometheus + Grafana in containers)
 
 ## Prerequisites
-- Docker and Docker Compose installed and running.
 
-## Monitoring Configuration
+- Docker Engine
+- Docker Compose v2 (`docker compose`)
 
-### 1. Leader Node
-- Start the Leader server.
-- Default metrics endpoint: `http://localhost:9090/metrics`
+## Mode 1: Monitoring Only (Host Services)
 
-### 2. Member Nodes
-Each member must be assigned a unique Metrics port to avoid conflicts.
+1. Run leader/member processes on host (ports `9090`, `9092-9094`).
+2. Start monitoring stack:
 
-- **Member 1:** `go run cmd/member/main.go -port 5556 -metrics 9092`
-- **Member 2:** `go run cmd/member/main.go -port 5557 -metrics 9093`
-- **Member 3:** `go run cmd/member/main.go -port 5558 -metrics 9094`
-
-### 3. Monitoring Stack
-Navigate to the `deploy` directory and start the stack:
 ```bash
-docker-compose up -d
+docker compose -f deploy/docker-compose.yml up -d
 ```
 
-### 4. Prometheus Target Discovery
-Update `deploy/prometheus.yml` to include your member endpoints. Use `host.docker.internal` for connections from the container to the host machine on Windows/macOS.
+3. Prometheus uses `deploy/prometheus.local.yml` and scrapes `host.docker.internal` targets.
 
-```yaml
-- targets: 
-  - 'host.docker.internal:9092'
-  - 'host.docker.internal:9093'
-  - 'host.docker.internal:9094'
-```
+## Mode 2: Full Docker Cluster
 
-Restart Prometheus to apply configuration changes:
+Start full stack:
+
 ```bash
-docker-compose restart prometheus
+docker compose -f deploy/docker-compose.cluster.yml up -d --build
 ```
 
-## Grafana Visualization
+This uses:
 
-1.  **Access:** Open `http://localhost:3000` in your browser.
-2.  **Credentials:** Default is `admin` / `admin`.
-3.  **Data Source Setup:**
-    - Navigate to Connections -> Add data source -> Prometheus.
-    - Set URL to `http://prometheus:9090`.
-    - Click Save & Test.
-4.  **Dashboard Import:**
-    - Go to Dashboards -> New -> Import.
-    - Upload the `deploy/grafana_dashboard.json` file.
-    - Select the Prometheus data source and click Import.
+- `deploy/prometheus.cluster.yml` for in-network scrape targets (`leader`, `member-1`, `member-2`, `member-3`)
+- `Dockerfile` image `tolerex-node:latest` for leader/member services
+
+Stop cluster:
+
+```bash
+docker compose -f deploy/docker-compose.cluster.yml down
+```
+
+## Access
+
+- Leader TCP: `localhost:6666`
+- Leader gRPC: `localhost:5555`
+- Prometheus: `http://localhost:9091`
+- Grafana: `http://localhost:3000` (`admin/admin`)
+
+## Grafana Dashboard
+
+Import:
+
+- `deploy/grafana_dashboard.json`
 
 ## Verification
 
-- **Prometheus Status:** Monitor targets at `http://localhost:9091/targets`. All scrapers should show an "UP" state.
-- **Data Flow:** Metrics are generated during active heartbeat cycles and replication operations. Run a stress test at the client layer to verify throughput visualization.
+- Prometheus targets: `http://localhost:9091/targets`
+- Check `UP` state for expected jobs.

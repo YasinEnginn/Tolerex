@@ -17,6 +17,7 @@ import (
 	"tolerex/internal/middleware"
 	"tolerex/internal/security"
 	"tolerex/internal/server/member"
+	"tolerex/internal/storage"
 	proto "tolerex/proto/gen"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -99,7 +100,7 @@ func main() {
 
 	ioMode := flag.String(
 		"io",
-		getenv("MEMBER_IO_MODE", "buffered"),
+		getenv("MEMBER_IO_MODE", storage.ModeBuffered),
 		"disk IO mode: buffered | unbuffered",
 	)
 
@@ -111,7 +112,7 @@ func main() {
 
 	flag.Parse()
 
-	leaderAddr := getenv("LEADER_ADDR", "leader:5555")
+	leaderAddr := getenv("LEADER_ADDR", "localhost:5555")
 	myAddr := os.Getenv("MEMBER_ADDR")
 	if myAddr == "" {
 		myAddr = "localhost:" + *port
@@ -273,10 +274,10 @@ func startMemberGRPC(memberLog *log.Logger, port, dataDir, ioMode string) {
 	grpcServer := grpc.NewServer(
 		grpc.Creds(creds),
 		grpc.ChainUnaryInterceptor(
-			middleware.RecoveryInterceptor("member"),
 			middleware.RequestIDInterceptor(),
 			middleware.LoggingInterceptor("member"),
 			middleware.MetricsInterceptor(),
+			middleware.RecoveryInterceptor("member"),
 		),
 	)
 
@@ -322,29 +323,34 @@ func registerToLeader(memberLog *log.Logger, leaderAddr, myAddr string) {
 		logger.Fatal(memberLog, "mTLS client credentials error: %v", err)
 	}
 
-	// Connect to Leader
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		conn, err := grpc.DialContext(
+			ctx,
+			leaderAddr,
+			grpc.WithTransportCredentials(creds),
+			grpc.WithBlock(),
+		)
+		if err != nil {
+			cancel()
+			logger.Warn(memberLog, "Leader not ready yet, retrying registration: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
 
-	conn, err := grpc.DialContext(
-		ctx,
-		leaderAddr,
-		grpc.WithTransportCredentials(creds),
-		grpc.WithBlock(),
-	)
-	if err != nil {
-		logger.Fatal(memberLog, "Failed to connect to leader: %v", err)
+		client := proto.NewStorageServiceClient(conn)
+		_, err = client.RegisterMember(ctx, &proto.MemberInfo{Address: myAddr})
+		conn.Close()
+		cancel()
+		if err != nil {
+			logger.Warn(memberLog, "Leader registration failed, retrying: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		logger.Info(memberLog, "Successfully registered to leader: %s", myAddr)
+		return
 	}
-	defer conn.Close()
-
-	client := proto.NewStorageServiceClient(conn)
-
-	_, err = client.RegisterMember(ctx, &proto.MemberInfo{Address: myAddr})
-	if err != nil {
-		logger.Fatal(memberLog, "Leader registration failed: %v", err)
-	}
-
-	logger.Info(memberLog, "Successfully registered to leader: %s", myAddr)
 }
 
 // ===================================================================================

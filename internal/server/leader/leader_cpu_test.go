@@ -14,6 +14,9 @@ import (
 )
 
 func TestLeader_CPUProfile(t *testing.T) {
+	if os.Getenv("TOLEREX_RUN_PROFILE_TEST") != "1" {
+		t.Skip("set TOLEREX_RUN_PROFILE_TEST=1 to run CPU profiling test")
+	}
 
 	// ------------------------------------------------------------
 	// TEST MODE
@@ -62,9 +65,8 @@ func TestLeader_CPUProfile(t *testing.T) {
 	// ------------------------------------------------------------
 	// CPU PROFILE
 	// ------------------------------------------------------------
-	f, err := os.Create("leader_cpu.prof")
-	prof := f.Name()
-
+	prof := filepath.Join(tmp, "leader_cpu.prof")
+	f, err := os.Create(prof)
 	if err != nil {
 		t.Fatal(err)
 	}

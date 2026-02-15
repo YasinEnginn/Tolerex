@@ -90,10 +90,11 @@ func main() {
 
 	grpcPort := getenv("LEADER_GRPC_PORT", "5555")
 	tcpPort := getenv("LEADER_TCP_PORT", "6666")
+	tcpBind := getenv("LEADER_TCP_BIND", "127.0.0.1")
 	metricsPort := getenv("LEADER_METRICS_PORT", "9090")
 
 	grpcAddr := ":" + grpcPort
-	tcpAddr := "127.0.0.1:" + tcpPort
+	tcpAddr := net.JoinHostPort(tcpBind, tcpPort)
 	metricsAddr := ":" + metricsPort
 
 	// -------------------------------------------------------------------------------
@@ -170,10 +171,10 @@ func main() {
 		grpcServer := grpc.NewServer(
 			grpc.Creds(creds),
 			grpc.ChainUnaryInterceptor(
-				middleware.RecoveryInterceptor("leader"),
 				middleware.RequestIDInterceptor(),
 				middleware.LoggingInterceptor("leader"),
 				middleware.MetricsInterceptor(),
+				middleware.RecoveryInterceptor("leader"),
 			),
 		)
 
@@ -205,7 +206,7 @@ func main() {
 		}
 		defer listener.Close()
 
-		logger.Info(log, "Leader TCP control plane listening on %s", tcpPort)
+		logger.Info(log, "Leader TCP control plane listening on %s", tcpAddr)
 
 		for {
 			conn, err := listener.Accept()

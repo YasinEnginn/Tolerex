@@ -29,7 +29,7 @@ var (
 	addrStr    = flag.String("addr", DEFAULT_ADDR, "Leader TCP address or comma-separated cluster addresses (e.g., localhost:6666,localhost:6667)")
 	measure    = flag.Bool("measure", false, "Measure RTT per command using a separate TCP connection")
 	csv        = flag.Bool("csv", false, "Output measurements as CSV to stdout (Timestamp,ClientID,Operation,Count,Bytes,RTT_us,Mode,Status,PayloadSize). All logs/UI go to stderr.")
-	flushEvery = flag.Int("flush", 1000, "Flush buffer after every N operations (default 1000). Set to 1 for unbuffered.")
+	flushEvery = flag.Int("flush", BULK_FLUSH_EVERY, "Flush buffer after every N operations (default 1000). Set to 1 for unbuffered.")
 	offset     = flag.Int("offset", 0, "Starting ID offset for BULK operations (default 0)")
 	clientID   = flag.String("id", "client", "Client Identifier for CSV output (default 'client')")
 	stressMins = flag.Int("stress", 0, "Run stress test for N minutes. If 0, runs interactive/stdin mode.")
@@ -145,20 +145,6 @@ func readSemanticLine(mconn net.Conn, r *bufio.Reader, timeout time.Duration) (s
 	}
 }
 
-func listDirs(base string) ([]string, error) {
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return nil, err
-	}
-	var dirs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			dirs = append(dirs, e.Name())
-		}
-	}
-	return dirs, nil
-}
-
 func listTxtFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -175,39 +161,18 @@ func listTxtFiles(dir string) ([]string, error) {
 
 func selectRandomTestFile() (string, error) {
 	const baseDir = "test_data"
-	categories, err := listDirs(baseDir)
-	if err != nil || len(categories) == 0 {
-		return "", fmt.Errorf("no test categories found")
-	}
-	category := categories[rand.Intn(len(categories))]
-	categoryPath := filepath.Join(baseDir, category)
-	files, err := listTxtFiles(categoryPath)
+	files, err := listTxtFiles(baseDir)
 	if err != nil || len(files) == 0 {
-		return "", fmt.Errorf("no txt files found in %s", category)
+		return "", fmt.Errorf("no txt files found in %s", baseDir)
 	}
-	return filepath.Join(categoryPath, files[rand.Intn(len(files))]), nil
+	return filepath.Join(baseDir, files[rand.Intn(len(files))]), nil
 }
 
 func selectTestFileInteractive() (string, error) {
 	const baseDir = "test_data"
-	categories, err := listDirs(baseDir)
-	if err != nil || len(categories) == 0 {
-		return "", fmt.Errorf("no test categories found")
-	}
-	fmt.Fprintln(os.Stderr, "Select test category:")
-	for i, c := range categories {
-		fmt.Fprintf(os.Stderr, "  %d) %s\n", i+1, c)
-	}
-	var catChoice int
-	fmt.Fprint(os.Stderr, "Choice: ")
-	fmt.Scanln(&catChoice)
-	if catChoice < 1 || catChoice > len(categories) {
-		return "", fmt.Errorf("invalid category choice")
-	}
-	categoryPath := filepath.Join(baseDir, categories[catChoice-1])
-	files, err := listTxtFiles(categoryPath)
+	files, err := listTxtFiles(baseDir)
 	if err != nil || len(files) == 0 {
-		return "", fmt.Errorf("no txt files found")
+		return "", fmt.Errorf("no txt files found in %s", baseDir)
 	}
 	fmt.Fprintf(os.Stderr, "\nAvailable files:\n")
 	for i, f := range files {
@@ -219,7 +184,7 @@ func selectTestFileInteractive() (string, error) {
 	if fileChoice < 1 || fileChoice > len(files) {
 		return "", fmt.Errorf("invalid file choice")
 	}
-	return filepath.Join(categoryPath, files[fileChoice-1]), nil
+	return filepath.Join(baseDir, files[fileChoice-1]), nil
 }
 
 func readWholeFile(path string) (string, error) {

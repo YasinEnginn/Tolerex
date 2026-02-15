@@ -14,8 +14,9 @@
 //   - Preserves overall service availability under runtime failures
 //
 // This interceptor represents the **last-resort safety net** in the gRPC
-// interceptor chain and MUST be placed as the outermost interceptor
-// (i.e., first in the chain) to ensure complete coverage.
+// interceptor chain and should be placed as the innermost interceptor
+// (i.e., last in the chain), so upstream logging/metrics interceptors
+// can observe the recovered error result.
 //
 // ===================================================================================
 
@@ -106,7 +107,8 @@ func RecoveryInterceptor(baseLoggerName string) grpc.UnaryServerInterceptor {
 				// Stack traces are critical for post-mortem analysis
 				// and root-cause investigation.
 
-				log.Printf(
+				logger.Error(
+					log,
 					"PANIC recovered: %v | method=%s\n%s",
 					r,
 					info.FullMethod,

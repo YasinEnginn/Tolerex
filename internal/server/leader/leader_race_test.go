@@ -2,7 +2,9 @@ package leader
 
 import (
 	"context"
-	"os"
+	"fmt"
+	"io"
+	"log"
 	"sync"
 	"testing"
 
@@ -11,17 +13,12 @@ import (
 	pb "tolerex/proto/gen"
 )
 
-func init() {
-	_ = os.MkdirAll("test_race", 0755)
-
-	// Test modu aktif
-	_ = os.Setenv("TOLEREX_TEST_MODE", "1")
-	_ = os.Setenv("TOLEREX_TEST_DIR", "test_race")
-
-	logger.Init()
-}
-
 func TestLeaderServer_ConcurrentStore(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TOLEREX_TEST_MODE", "1")
+	t.Setenv("TOLEREX_TEST_DIR", tmp)
+	logger.Leader = log.New(io.Discard, "", 0)
+	logger.Member = log.New(io.Discard, "", 0)
 
 	s := &LeaderServer{
 		Members:   []string{"m1", "m2", "m3"},
@@ -46,19 +43,52 @@ func TestLeaderServer_ConcurrentStore(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
+	errs := make(chan error, goroutines*writesPerGoroutine)
 
 	for g := 0; g < goroutines; g++ {
 		go func(gid int) {
 			defer wg.Done()
 			for i := 0; i < writesPerGoroutine; i++ {
 				id := int32(gid*1000 + i)
-				_, _ = s.Store(ctx, &pb.StoredMessage{
+				res, err := s.Store(ctx, &pb.StoredMessage{
 					Id:   id,
 					Text: "HELLO",
 				})
+				if err != nil {
+					errs <- err
+					continue
+				}
+				if res == nil || !res.Ok {
+					errs <- fmt.Errorf("store not ok: id=%d res=%+v", id, res)
+				}
 			}
 		}(g)
 	}
 
 	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent store failed: %v", err)
+		}
+	}
+
+	expectedWrites := goroutines * writesPerGoroutine
+
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
+	if len(s.MsgMap) != expectedWrites {
+		t.Fatalf("MsgMap entries mismatch: got=%d want=%d", len(s.MsgMap), expectedWrites)
+	}
+
+	totalReplicas := 0
+	for _, info := range s.MemberLog {
+		totalReplicas += info.MessageCnt
+	}
+	expectedReplicaWrites := expectedWrites * s.Tolerance
+	if totalReplicas != expectedReplicaWrites {
+		t.Fatalf("member message counts mismatch: got=%d want=%d", totalReplicas, expectedReplicaWrites)
+	}
 }

@@ -17,6 +17,7 @@ package member
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"tolerex/internal/logger"
@@ -29,9 +30,16 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Expected Leader identity (certificate Common Name).
-// Ensure leader certificate CN is exactly "leader".
-const expectedLeaderCN = "leader"
+const defaultExpectedLeaderCN = "leader"
+
+// expectedLeaderCN returns the allowed Leader certificate CN.
+// Override via MEMBER_EXPECTED_LEADER_CN for custom PKI deployments.
+func expectedLeaderCN() string {
+	if cn := os.Getenv("MEMBER_EXPECTED_LEADER_CN"); cn != "" {
+		return cn
+	}
+	return defaultExpectedLeaderCN
+}
 
 // ===================================================================================
 // CALLER IDENTITY EXTRACTION
@@ -78,8 +86,14 @@ func authorizeLeader(ctx context.Context) error {
 	}
 
 	leaf := tlsInfo.State.VerifiedChains[0][0]
-	if leaf.Subject.CommonName != expectedLeaderCN {
-		logger.Warn(logger.Member, "Unauthorized caller CN=%s", leaf.Subject.CommonName)
+	expectedCN := expectedLeaderCN()
+	if leaf.Subject.CommonName != expectedCN {
+		logger.Warn(
+			logger.Member,
+			"Unauthorized caller CN=%s expected=%s",
+			leaf.Subject.CommonName,
+			expectedCN,
+		)
 		return status.Error(codes.PermissionDenied, "unauthorized caller")
 	}
 
@@ -184,7 +198,6 @@ func (s *MemberServer) Retrieve(ctx context.Context, req *pb.MessageID) (*pb.Sto
 		"retrieve begin caller=%s msg_id=%d",
 		caller,
 		req.Id,
-		
 	)
 
 	// (3) Cancellation-aware before disk I/O

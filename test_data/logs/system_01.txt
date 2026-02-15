@@ -1,8 +1,0 @@
-[2026-01-16 22:45:01] INFO: System initialization started.
-[2026-01-16 22:45:02] DEBUG: Cluster membership discovery in progress.
-[2026-01-16 22:45:03] INFO: Connection established to Leader: 127.0.0.1:5555.
-[2026-01-16 22:45:04] WARN: High latency detected on Member-3.
-[2026-01-16 22:45:05] INFO: Snapshot triggered by operator.
-[2026-01-16 22:45:06] INFO: Backup completed successfully in 450ms.
-[2026-01-16 22:45:07] DEBUG: Heartbeat received from all active members.
-[2026-01-16 22:45:08] INFO: Performance metrics published to Prometheus.

@@ -29,6 +29,8 @@ package logger
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -126,12 +128,13 @@ func logBaseDir() string {
 //   - Compression  : enabled (.gz)
 //
 // All loggers share the same sink but differ by prefix.
+// Logs are written to both the rolling log file and stderr.
 
 func Init() {
 	baseDir := logBaseDir()
 	_ = os.MkdirAll(baseDir, 0755)
 
-	writer := &lumberjack.Logger{
+	fileWriter := &lumberjack.Logger{
 		Filename:   filepath.Join(baseDir, "tolerex.log"), // log file path
 		MaxSize:    5,                                     // MB
 		MaxBackups: 7,                                     // files
@@ -139,6 +142,8 @@ func Init() {
 		Compress:   true,                                  // enabled
 
 	}
+
+	writer := io.MultiWriter(os.Stderr, fileWriter)
 
 	// Include timestamps and source location for debugging
 	flags := log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile
@@ -176,37 +181,38 @@ func WithContext(ctx context.Context, base *log.Logger) *log.Logger {
 // LOGGING HELPERS (LEVEL-AWARE)
 // ===================================================================================
 
+func logWithLevel(log *log.Logger, level Level, tag string, format string, v ...any) {
+	if !enabled(level) {
+		return
+	}
+	msg := fmt.Sprintf("["+tag+"] "+format, v...)
+	_ = log.Output(4, msg)
+}
+
 // Debug logs diagnostic information useful during development.
 func Debug(log *log.Logger, format string, v ...any) {
-	if enabled(DEBUG) {
-		log.Printf("[DEBUG] "+format, v...)
-	}
+	logWithLevel(log, DEBUG, "DEBUG", format, v...)
 }
 
 // Info logs normal operational events.
 func Info(log *log.Logger, format string, v ...any) {
-	if enabled(INFO) {
-		log.Printf("[INFO] "+format, v...)
-	}
+	logWithLevel(log, INFO, "INFO", format, v...)
 }
 
 // Warn logs abnormal but recoverable conditions.
 func Warn(log *log.Logger, format string, v ...any) {
-	if enabled(WARN) {
-		log.Printf("[WARN] "+format, v...)
-	}
+	logWithLevel(log, WARN, "WARN", format, v...)
 }
 
 // Error logs failures that do not immediately terminate the process.
 func Error(log *log.Logger, format string, v ...any) {
-	if enabled(ERROR) {
-		log.Printf("[ERROR] "+format, v...)
-	}
+	logWithLevel(log, ERROR, "ERROR", format, v...)
 }
 
 // Fatal logs an unrecoverable error and immediately terminates the process.
 // This should only be used for system-level failures.
 func Fatal(log *log.Logger, format string, v ...any) {
-	log.Printf("[FATAL] "+format, v...)
+	msg := fmt.Sprintf("[FATAL] "+format, v...)
+	_ = log.Output(4, msg)
 	os.Exit(1)
 }

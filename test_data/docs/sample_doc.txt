@@ -1,7 +1,0 @@
-This is a sample document used for validating the FILE and BULK FILE operations in the Tolerex distributed storage system. 
-The system is designed to handle varied payloads efficiently. 
-Large files are processed as single SET operations, while small files can be batched together.
-mTLS ensures that all data in transit between the Leader and Members is fully encrypted.
-The P2C load balancer ensures that even under high load, no single member becomes a bottleneck.
-Verification of data integrity is performed at each step of the replication pipeline.
-This particular file provides a medium-sized payload for RTT measurement and throughput stress testing.

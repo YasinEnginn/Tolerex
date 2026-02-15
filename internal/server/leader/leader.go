@@ -86,6 +86,13 @@ type LeaderServer struct {
 	// --- RUNTIME LISTENERS ---
 	TcpListener  net.Listener // Operator TCP console
 	GrpcListener net.Listener // gRPC service listener
+
+	// --- HEARTBEAT WATCHER CONFIG (TEST OVERRIDES) ---
+	heartbeatTimeout  time.Duration
+	heartbeatInterval time.Duration
+	heartbeatStop     chan struct{}
+	heartbeatDone     chan struct{}
+	heartbeatMu       sync.Mutex
 }
 
 // --- PERSISTED LEADER STATE ---
@@ -106,9 +113,9 @@ func stateFilePath() string {
 }
 
 const (
-	heartbeatTimeout  = 15 * time.Second
-	heartbeatInterval = 5 * time.Second
-	rpcTimeout        = 2 * time.Second
+	defaultHeartbeatTimeout  = 15 * time.Second
+	defaultHeartbeatInterval = 5 * time.Second
+	rpcTimeout               = 2 * time.Second
 )
 
 // ===================================================================================
@@ -142,42 +149,86 @@ func (s *LeaderServer) Heartbeat(ctx context.Context, hb *pb.HeartbeatRequest) (
 // --- HEARTBEAT WATCHER ---
 // Periodically checks liveness and marks Members DOWN on timeout.
 func (s *LeaderServer) StartHeartbeatWatcher() {
-	logger.Info(logger.Leader, "Heartbeat watcher started (timeout=15s, interval=5s)")
+	timeout := s.heartbeatTimeout
+	if timeout <= 0 {
+		timeout = defaultHeartbeatTimeout
+	}
+	interval := s.heartbeatInterval
+	if interval <= 0 {
+		interval = defaultHeartbeatInterval
+	}
+
+	s.heartbeatMu.Lock()
+	if s.heartbeatStop != nil {
+		s.heartbeatMu.Unlock()
+		logger.Warn(logger.Leader, "Heartbeat watcher already running")
+		return
+	}
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	s.heartbeatStop = stopCh
+	s.heartbeatDone = doneCh
+	s.heartbeatMu.Unlock()
+
+	logger.Info(logger.Leader, "Heartbeat watcher started (timeout=%s, interval=%s)", timeout, interval)
 
 	go func() {
-		ticker := time.NewTicker(heartbeatInterval)
+		defer close(doneCh)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
-		for range ticker.C {
-			logger.Debug(logger.Leader, "Heartbeat watcher tick")
+		for {
+			select {
+			case <-ticker.C:
+				logger.Debug(logger.Leader, "Heartbeat watcher tick")
 
-			s.stateMu.Lock()
-			now := time.Now()
-			changed := false
+				s.stateMu.Lock()
+				now := time.Now()
+				changed := false
 
-			for _, m := range s.MemberLog {
-				if m.LastSeen.IsZero() {
-					m.LastSeen = m.AddedAt
+				for _, m := range s.MemberLog {
+					if m.LastSeen.IsZero() {
+						m.LastSeen = m.AddedAt
+					}
+					if now.Sub(m.LastSeen) > timeout && m.Alive {
+						logger.Warn(logger.Leader,
+							"Member marked DOWN: addr=%s lastSeen=%s addedAt=%s",
+							m.Address,
+							m.LastSeen.Format(time.RFC3339),
+							m.AddedAt.Format(time.RFC3339),
+						)
+						m.Alive = false
+						changed = true
+					}
 				}
-				if now.Sub(m.LastSeen) > heartbeatTimeout && m.Alive {
-					logger.Warn(logger.Leader,
-						"Member marked DOWN: addr=%s lastSeen=%s addedAt=%s",
-						m.Address,
-						m.LastSeen.Format(time.RFC3339),
-						m.AddedAt.Format(time.RFC3339),
-					)
-					m.Alive = false
-					changed = true
+
+				s.stateMu.Unlock()
+
+				if changed {
+					_ = s.saveState()
 				}
-			}
-
-			s.stateMu.Unlock()
-
-			if changed {
-				_ = s.saveState()
+			case <-stopCh:
+				logger.Info(logger.Leader, "Heartbeat watcher stopped")
+				return
 			}
 		}
 	}()
+}
+
+func (s *LeaderServer) StopHeartbeatWatcher() {
+	s.heartbeatMu.Lock()
+	stopCh := s.heartbeatStop
+	doneCh := s.heartbeatDone
+	s.heartbeatStop = nil
+	s.heartbeatDone = nil
+	s.heartbeatMu.Unlock()
+
+	if stopCh != nil {
+		close(stopCh)
+	}
+	if doneCh != nil {
+		<-doneCh
+	}
 }
 
 // ===================================================================================
@@ -219,7 +270,7 @@ func NewLeaderServer(members []string, toleranceFile string) (*LeaderServer, err
 
 	// Default load balancer
 	strategy := os.Getenv("BALANCER_STRATEGY")
-	if strategy == "p2c" {
+	if strategy == shared.StrategyP2C {
 		logger.Info(logger.Leader, "Using Load Balancer: Power of Two Choices (P2C)")
 		leader.Balancer = &balancer.PowerOfTwoChoicesBalancer{}
 	} else {
@@ -489,6 +540,9 @@ func (s *LeaderServer) Store(ctx context.Context, msg *pb.StoredMessage) (*pb.St
 // ===================================================================================
 
 func (s *LeaderServer) Retrieve(ctx context.Context, req *pb.MessageID) (*pb.StoredMessage, error) {
+	// WARNING: test-only shortcut.
+	// If TOLEREX_TEST_MODE=1 is enabled outside tests, Retrieve will bypass
+	// member lookup and always return a dummy payload.
 	if os.Getenv("TOLEREX_TEST_MODE") == "1" {
 		return &pb.StoredMessage{Id: req.Id, Text: "dummy"}, nil
 	}

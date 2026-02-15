@@ -10,3 +10,9 @@ type MemberInfo struct {
 	LastSeen   time.Time
 	Alive      bool
 }
+
+// --- LOAD BALANCER STRATEGIES ---
+const (
+	StrategyLeastLoaded = "least_loaded"
+	StrategyP2C         = "p2c"
+)

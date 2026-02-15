@@ -17,44 +17,41 @@ func generateMembers(n int) []MemberLoad {
 	return m
 }
 
-func BenchmarkLeastLoaded_100_Members(b *testing.B) {
+func benchmarkLeastLoadedSortCost(b *testing.B, n, tolerance int) {
 	balancer := &LeastLoadedBalancer{}
-	members := generateMembers(100)
-	tolerance := 3
+	members := generateMembers(n)
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		balancer.Pick(members, tolerance)
+		// LeastLoaded sorts in-place, so we copy to emulate a fresh per-request snapshot.
+		snapshot := append([]MemberLoad(nil), members...)
+		_ = balancer.Pick(snapshot, tolerance)
 	}
 }
 
-func BenchmarkLeastLoaded_10000_Members(b *testing.B) {
-	// O(N log N) - This should get slower as N grows
-	balancer := &LeastLoadedBalancer{}
-	members := generateMembers(10000)
-	tolerance := 3
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		balancer.Pick(members, tolerance)
-	}
-}
-
-func BenchmarkP2C_100_Members(b *testing.B) {
+func benchmarkP2CSparsePoolCost(b *testing.B, n, tolerance int) {
 	balancer := &PowerOfTwoChoicesBalancer{}
-	members := generateMembers(100)
-	tolerance := 3
+	members := generateMembers(n)
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		balancer.Pick(members, tolerance)
+		// Sparse-pool P2C avoids full O(N) candidate copies for small tolerance.
+		_ = balancer.Pick(members, tolerance)
 	}
 }
 
-func BenchmarkP2C_10000_Members(b *testing.B) {
-	// O(1) - This should remain fast regardless of N
-	balancer := &PowerOfTwoChoicesBalancer{}
-	members := generateMembers(10000)
-	tolerance := 3
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		balancer.Pick(members, tolerance)
-	}
+func BenchmarkLeastLoaded_SortBased_O_NLogN_100(b *testing.B) {
+	benchmarkLeastLoadedSortCost(b, 100, 3)
+}
+
+func BenchmarkLeastLoaded_SortBased_O_NLogN_10000(b *testing.B) {
+	benchmarkLeastLoadedSortCost(b, 10000, 3)
+}
+
+func BenchmarkP2C_SparsePool_NearO_Tolerance_100(b *testing.B) {
+	benchmarkP2CSparsePoolCost(b, 100, 3)
+}
+
+func BenchmarkP2C_SparsePool_NearO_Tolerance_10000(b *testing.B) {
+	benchmarkP2CSparsePoolCost(b, 10000, 3)
 }

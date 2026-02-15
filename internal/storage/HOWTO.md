@@ -1,42 +1,42 @@
-# Tolerex Storage Engine Operations
+# Tolerex Storage Operations
 
-This directory contains the persistent storage layer for the Tolerex system, managing disk I/O and data integrity.
+This directory contains storage read/write logic for member data.
 
-## Testing
+## Run Tests
 
-Execute the storage layer tests:
 ```bash
 go test ./internal/storage -v
 ```
 
-## Benchmarking
+## Run Benchmarks
 
-### Standard Benchmark
-Measure basic throughput and memory allocations:
+Basic storage benchmarks:
+
 ```bash
-go test ./internal/storage -bench=Write -benchtime=5s -benchmem
+go test ./internal/storage -run '^$' -bench 'BenchmarkWriteMessage_' -benchmem
 ```
 
-### Ultra-Detailed Professional Analysis
-Runs the full suite with 1800s (30m) benchtime and generates all profiles.
+Long profiling run (optional):
 
 ```powershell
-go test ./internal/storage -bench=Write -benchtime=1800s -benchmem -v -count=1 -timeout=60m -cpuprofile=cpu.pprof -memprofile=mem.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof -trace=trace.out | Tee-Object -FilePath "benchmark_detailed_report.txt"
+go test ./internal/storage -run '^$' -bench 'BenchmarkWriteMessage_' -benchtime=300s -benchmem -count=1 -timeout=30m -cpuprofile=cpu.pprof -memprofile=mem.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof -trace=trace.out | Tee-Object -FilePath "benchmark_detailed_report.txt"
 ```
 
-**Output Files:**
-- `benchmark_full_results.json`: Machine-readable results (throughput, memory, timings).
-- `cpu.pprof`: Analysis of function execution time.
-- `mem.pprof`: Identification of memory leak or high allocation areas.
-- `block.pprof`: Goroutine wait states (very useful for storage).
-- `mutex.pprof`: Lock contention (useful for parallel writers).
-- `trace.out`: Microsecond-precision execution timeline.
+Generated files:
 
-**How to analyze:**
-1. **Visual CPU Profile:** `go tool pprof -http=:8080 cpu.pprof`
-2. **Visual Trace:** `go tool trace trace.out`
-3. **Compare Matrix:** Open `benchmark_full_results.json` to see how buffer size affects throughput.
+- `benchmark_detailed_report.txt`
+- `cpu.pprof`
+- `mem.pprof`
+- `block.pprof`
+- `mutex.pprof`
+- `trace.out`
+
+Analysis commands:
+
+1. `go tool pprof -http=:8080 cpu.pprof`
+2. `go tool trace trace.out`
 
 ## I/O Modes
-- **Buffered:** Utilizes userspace caching for high-throughput stream writing.
-- **Unbuffered:** Employs direct system calls for critical data durability guarantees.
+
+- `buffered`: higher throughput for sequential write workload.
+- `unbuffered`: simpler write path with stronger immediate durability semantics.

@@ -40,6 +40,12 @@ import (
 	"tolerex/internal/logger"
 )
 
+// --- IO MODES ---
+const (
+	ModeBuffered   = "buffered"
+	ModeUnbuffered = "unbuffered"
+)
+
 // --- WRITE MESSAGE ---
 // Writes a message to disk using its numeric identifier as filename.
 //
@@ -61,7 +67,7 @@ func WriteMessage(baseDir string, id int, text string, mode string) error {
 	}
 
 	switch mode {
-	case "unbuffered":
+	case ModeUnbuffered:
 		logger.Debug(logger.Member, "WriteMessage: writing unbuffered msg_id=%d", id)
 		return writeUnbuffered(dir, id, text)
 	default:

@@ -1,11 +1,10 @@
-version: '3.8'
-
 services:
   prometheus:
     image: prom/prometheus:latest
-    container_name: tolerex-prometheus
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.local.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
     # We map port 9091 because Host 9090 is taken by the Leader App
     ports:
       - "9091:9090"
@@ -14,7 +13,6 @@ services:
 
   grafana:
     image: grafana/grafana:latest
-    container_name: tolerex-grafana
     ports:
       - "3000:3000"
     depends_on:

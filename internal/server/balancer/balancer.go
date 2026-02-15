@@ -5,22 +5,20 @@ import (
 	"sort"
 )
 
-// MemberLoad: Leader'ın seçim yapması için ihtiyaç duyduğu "yük" snapshot'ı.
-// (MemberInfo'nun tamamını taşımıyoruz; sadece seçim için gerekenler.)
+// MemberLoad is the minimal load snapshot needed for replica selection.
 type MemberLoad struct {
 	Addr  string
 	Count int // MessageCnt
 }
 
-// LoadBalancer: farklı seçim stratejilerini tak-çıkar yapabilmek için arayüz.
+// LoadBalancer abstracts pluggable replica selection strategies.
 type LoadBalancer interface {
-	// Pick: candidates içinden tolerance kadar hedef seçer.
-	// candidates zaten "Alive=true" filtrelenmiş olmalı.
+	// Pick selects up to tolerance targets from candidates.
+	// candidates are expected to be pre-filtered (alive members only).
 	Pick(candidates []MemberLoad, tolerance int) []MemberLoad
 }
 
-// LeastLoadedBalancer: mevcut leader.go içindeki mantığın taşınmış hali.
-// "en az MessageCnt" olanları seçer.
+// LeastLoadedBalancer selects members with the lowest message count.
 type LeastLoadedBalancer struct{}
 
 func (b *LeastLoadedBalancer) Pick(candidates []MemberLoad, tolerance int) []MemberLoad {
@@ -28,9 +26,9 @@ func (b *LeastLoadedBalancer) Pick(candidates []MemberLoad, tolerance int) []Mem
 		return nil
 	}
 
-	// Deterministik sıralama:
-	// 1) Count artan
-	// 2) Count eşitse Addr alfabetik (tie-break)
+	// Deterministic sort:
+	// 1) lower Count first
+	// 2) Addr lexical order as tie-breaker
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].Count != candidates[j].Count {
 			return candidates[i].Count < candidates[j].Count
@@ -49,9 +47,9 @@ func (b *LeastLoadedBalancer) Pick(candidates []MemberLoad, tolerance int) []Mem
 	return out
 }
 
-// PowerOfTwoChoicesBalancer: "The Power of Two Choices" algoritması.
-// N eleman arasından rastgele 2 tane seçer, yükü az olanı alır.
-// Büyük ölçekli sistemlerde tüm listeyi sıralamak (sort) pahalı olduğunda kullanılır.
+// PowerOfTwoChoicesBalancer applies "Power of Two Choices".
+// This implementation keeps an implicit sparse candidate pool and removes only
+// winners, avoiding full O(N) candidate copies for small tolerance values.
 type PowerOfTwoChoicesBalancer struct{}
 
 func (b *PowerOfTwoChoicesBalancer) Pick(candidates []MemberLoad, tolerance int) []MemberLoad {
@@ -59,47 +57,63 @@ func (b *PowerOfTwoChoicesBalancer) Pick(candidates []MemberLoad, tolerance int)
 		return nil
 	}
 
-	// Yeterli aday yoksa veya tam sayı isteniyorsa hepsini dön
+	// If pool size is already <= tolerance, return all.
 	if len(candidates) <= tolerance {
 		return candidates
 	}
 
 	out := make([]MemberLoad, 0, tolerance)
+	poolSize := len(candidates)
+	// sparse maps virtual pool positions to candidate indices when swapped.
+	sparse := make(map[int]int, tolerance)
 
-	// Aday havuzunun kopyası üzerinde çalışalım ki orijinali bozulmasın
-	pool := make([]MemberLoad, len(candidates))
-	copy(pool, candidates)
+	getAt := func(pos int) int {
+		if v, ok := sparse[pos]; ok {
+			return v
+		}
+		return pos
+	}
+	setAt := func(pos, val int) {
+		if pos == val {
+			delete(sparse, pos)
+			return
+		}
+		sparse[pos] = val
+	}
+	removeAt := func(pos int) {
+		lastPos := poolSize - 1
+		if pos != lastPos {
+			setAt(pos, getAt(lastPos))
+		}
+		delete(sparse, lastPos)
+		poolSize--
+	}
 
-	// tolerance kadar seçim yapacağız
-	for i := 0; i < tolerance; i++ {
-		// Havuzda tek eleman kaldıysa mecbur onu seç
-		if len(pool) == 1 {
-			out = append(out, pool[0])
+	for i := 0; i < tolerance && poolSize > 0; i++ {
+		if poolSize == 1 {
+			out = append(out, candidates[getAt(0)])
 			break
 		}
 
-		// Rastgele 2 indeks seç
-		idx1 := rand.Intn(len(pool))
-		idx2 := rand.Intn(len(pool))
-
-		// Eğer aynı indeksi seçtiysek, farklı olana kadar dene (retry limit koymak iyi olabilir ama len>1 ise sorun olmaz)
-		for idx1 == idx2 {
-			idx2 = rand.Intn(len(pool))
+		pos1 := rand.Intn(poolSize)
+		// Uniform distinct position without retry loop.
+		pos2 := rand.Intn(poolSize - 1)
+		if pos2 >= pos1 {
+			pos2++
 		}
 
-		// Karşılaştır
+		idx1 := getAt(pos1)
+		idx2 := getAt(pos2)
+
+		winnerPos := pos1
 		winnerIdx := idx1
-		if pool[idx2].Count < pool[idx1].Count {
+		if candidates[idx2].Count < candidates[idx1].Count {
+			winnerPos = pos2
 			winnerIdx = idx2
 		}
 
-		// Kazananı listeye ekle
-		out = append(out, pool[winnerIdx])
-
-		// Kazananı havuzdan çıkar (swap with last & shrink)
-		lastIdx := len(pool) - 1
-		pool[winnerIdx] = pool[lastIdx]
-		pool = pool[:lastIdx]
+		out = append(out, candidates[winnerIdx])
+		removeAt(winnerPos)
 	}
 
 	return out

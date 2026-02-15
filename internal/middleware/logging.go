@@ -108,7 +108,7 @@ func LoggingInterceptor(baseLoggerName string) grpc.UnaryServerInterceptor {
 		// Log the beginning of request processing.
 		// At this point, no assumptions are made about outcome.
 
-		log.Printf("gRPC started: %s", info.FullMethod)
+		logger.Info(log, "gRPC started: %s", info.FullMethod)
 
 		// -----------------------------------------------------------------------
 		// DELEGATE TO NEXT HANDLER
@@ -135,14 +135,16 @@ func LoggingInterceptor(baseLoggerName string) grpc.UnaryServerInterceptor {
 		// Errors are explicitly logged to aid diagnosis.
 
 		if err != nil {
-			log.Printf(
+			logger.Error(
+				log,
 				"gRPC failed: %s | duration=%v | err=%v",
 				info.FullMethod,
 				dur,
 				err,
 			)
 		} else {
-			log.Printf(
+			logger.Info(
+				log,
 				"gRPC finished: %s | duration=%v",
 				info.FullMethod,
 				dur,

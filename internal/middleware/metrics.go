@@ -50,9 +50,9 @@ import (
 //   - Classifies request outcome (success / error)
 //   - Updates Prometheus counters and histograms
 //
-// This interceptor should be placed *after* recovery logic
-// and *before* application-level handlers to ensure all requests
-// are consistently observed.
+// This interceptor should wrap recovery logic in the chain (be declared
+// before RecoveryInterceptor) so panics converted into gRPC errors are
+// still counted as failed requests.
 
 func MetricsInterceptor() grpc.UnaryServerInterceptor {
 	return func(

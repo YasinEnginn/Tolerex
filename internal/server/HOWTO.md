@@ -1,41 +1,43 @@
 # Tolerex Server Operations
 
-This directory contains the core cluster coordination logic for the Tolerex system.
+This directory contains cluster coordination logic (leader/member/balancer).
 
-## Testing and Quality Assurance
+## Tests
 
-### Unit and Integration Tests
-Execute the comprehensive test suite for the server layer:
+Unit and integration tests:
+
 ```bash
 go test ./internal/server/... -v
 ```
 
-### Race Condition Detection
-Verify thread safety and concurrency controls:
+Race detection:
+
 ```bash
 go test -race ./internal/server/...
 ```
 
-## Performance Profiling
+## CPU Profile Test
 
-### CPU Profiling
-The system includes built-in support for CPU profiling during load tests.
+The leader profile test is gated by an env var.
 
-1.  Execute the profiling test:
-    ```bash
-    go test ./internal/server/leader -run TestLeader_CPUProfile
-    ```
-2.  Analyze results using the Go pprof tool:
-    ```bash
-    go tool pprof internal/server/leader/leader_cpu.prof
-    ```
-3.  Open the interactive web interface:
-    ```bash
-    go tool pprof -http=:8080 internal/server/leader/leader_cpu.prof
-    ```
+Run:
 
-## Modular Structure
-- `leader/`: Cluster coordination and state management.
-- `member/`: Data persistence and RPC handlers.
-- `balancer/`: Algorithmic load distribution strategies.
-- `shared/`: Canonical types and models.
+```powershell
+$env:TOLEREX_RUN_PROFILE_TEST='1'
+go test ./internal/server/leader -run TestLeader_CPUProfile -v
+```
+
+The test writes `leader_cpu.prof` into a temporary directory and prints the full path in test logs.
+Use that path with pprof:
+
+```bash
+go tool pprof <PROFILE_PATH>
+go tool pprof -http=:8080 <PROFILE_PATH>
+```
+
+## Package Layout
+
+- `leader/`: cluster state, membership, replication orchestration
+- `member/`: storage RPC handlers
+- `balancer/`: member selection strategies
+- `shared/`: shared models

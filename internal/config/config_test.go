@@ -63,3 +63,43 @@ func TestReadTolerance_InvalidValue(t *testing.T) {
 		t.Fatal("expected error for negative tolerance, got nil")
 	}
 }
+
+func TestReadTolerance_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "missing.conf")
+
+	_, err := ReadTolerance(path)
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
+func TestReadTolerance_InvalidFormatNoEquals(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tolerance.conf")
+
+	content := "TOLERANCE 3"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	_, err := ReadTolerance(path)
+	if err == nil {
+		t.Fatal("expected error for invalid format, got nil")
+	}
+}
+
+func TestReadTolerance_InvalidValueNotInteger(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tolerance.conf")
+
+	content := "TOLERANCE=abc"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	_, err := ReadTolerance(path)
+	if err == nil {
+		t.Fatal("expected error for non-integer tolerance, got nil")
+	}
+}

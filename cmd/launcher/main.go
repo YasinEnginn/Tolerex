@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"tolerex/internal/storage"
 )
 
 // ===================================================================================
@@ -94,6 +96,11 @@ func main() {
 	fmt.Println("\n--- Client Configuration ---")
 	stressMins := askInt("Stress Test Duration (minutes, 0 for interactive): ", 0)
 	flushRate := askInt("Client Flush Rate (1=unbuffered, 1000=default): ", 1)
+	memberIOMode := askChoice(
+		"Member Disk IO Mode [buffered/unbuffered]: ",
+		storage.ModeBuffered,
+		storage.ModeUnbuffered,
+	)
 
 	measureMode := askChoice("Enable RTT measurement? [yes/no]: ", "yes", "no")
 
@@ -102,8 +109,17 @@ func main() {
 		csvMode = askChoice("Enable CSV output for detailed metrics? [yes/no]: ", "yes", "no")
 	}
 
+	baseDir := os.Getenv("TOLEREX_BASE_DIR")
+	if baseDir == "" {
+		wd, err := os.Getwd()
+		if err == nil {
+			baseDir = wd
+		} else {
+			baseDir = "."
+		}
+	}
+
 	const (
-		baseDir         = "D:\\Tolerex"
 		startGrpcPort   = 5556
 		startMetricPort = 9092
 		leaderTCPAddr   = "localhost:6666" // The port leader listens for clients
@@ -118,6 +134,7 @@ func main() {
 	fmt.Printf("Clients      : %d\n", clientCount)
 	fmt.Printf("Duration     : %d minutes\n", stressMins)
 	fmt.Printf("Flush Rate   : %d\n", flushRate)
+	fmt.Printf("Member IO    : %s\n", memberIOMode)
 	fmt.Printf("Measure RTT  : %s\n", measureMode)
 	fmt.Printf("CSV Logging  : %s\n", csvMode)
 	fmt.Println("-----------------------------")
@@ -132,7 +149,7 @@ func main() {
 	spawnTerminal(
 		"TOLEREX-LEADER [PORT:6666]",
 		fmt.Sprintf(
-			"cd %s; "+
+			"cd \"%s\"; "+
 				"$env:LEADER_GRPC_PORT='5555'; "+
 				"$env:LEADER_METRICS_PORT='9090'; "+
 				"$env:BALANCER_STRATEGY='%s'; "+
@@ -151,15 +168,10 @@ func main() {
 		grpcPort := startGrpcPort + i
 		metricsPort := startMetricPort + i
 
-		ioMode := "buffered"
-		if flushRate == 1 {
-			ioMode = "unbuffered"
-		}
-
 		spawnTerminal(
 			fmt.Sprintf("MEMBER-%d [GRPC:%d]", i+1, grpcPort),
 			fmt.Sprintf(
-				"cd %s; "+
+				"cd \"%s\"; "+
 					"$env:LEADER_ADDR='localhost:5555'; "+
 					"$env:MEMBER_ADDR='localhost:%d'; "+
 					"go run ./cmd/member/main.go -port=%d -metrics=%d -io=%s",
@@ -167,7 +179,7 @@ func main() {
 				grpcPort,
 				grpcPort,
 				metricsPort,
-				ioMode,
+				memberIOMode,
 			),
 		)
 		time.Sleep(500 * time.Millisecond)
@@ -204,7 +216,7 @@ func main() {
 
 		spawnTerminal(
 			title,
-			fmt.Sprintf("cd %s; go run ./cmd/client/main.go %s", baseDir, flags),
+			fmt.Sprintf("cd \"%s\"; go run ./cmd/client/main.go %s", baseDir, flags),
 		)
 		time.Sleep(300 * time.Millisecond)
 	}
@@ -212,21 +224,6 @@ func main() {
 	fmt.Println("\nDeployment successful! Use the opened terminals to monitor the cluster.")
 	if csvMode == "yes" {
 		fmt.Printf("Real-time telemetry saved to: %s\n", measuredDir)
-
-		fmt.Println("\nWould you like to generate a visual HTML report now? (Requires tests to be finished or running)")
-		genReport := askChoice("Generate HTML Report? [yes/no]: ", "yes", "no")
-		if genReport == "yes" {
-			fmt.Println("Generating report...")
-			cmdReport := exec.Command("go", "run", "./cmd/report_tool/main.go")
-			cmdReport.Dir = baseDir
-			if err := cmdReport.Run(); err != nil {
-				fmt.Printf("Error generating report: %v\n", err)
-			} else {
-				fmt.Println("Report generated: measured/report.html")
-				// Try to open it
-				_ = exec.Command("cmd", "/c", "start", filepath.Join(measuredDir, "report.html")).Start()
-			}
-		}
 	}
 	fmt.Println("========================================")
 	waitEnter("Press ENTER to exit launcher (this will NOT kill the nodes)...")

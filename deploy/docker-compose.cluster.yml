@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ========================================
   # LEADER NODE
@@ -9,10 +7,12 @@ services:
       context: ..
       dockerfile: Dockerfile
     image: tolerex-node:latest
-    container_name: tolerex-leader
     command: ["./leader"]
+    restart: unless-stopped
     environment:
       - LEADER_GRPC_PORT=5555
+      - LEADER_TCP_PORT=6666
+      - LEADER_TCP_BIND=0.0.0.0
       - LEADER_METRICS_PORT=9090
       - TOLEREX_ENV=docker
     ports:
@@ -22,15 +22,18 @@ services:
     networks:
       - tolerex-net
     volumes:
-      - leader-data:/root/internal/data
+      - leader-data:/app/internal/data
 
   # ========================================
   # MEMBER NODES
   # ========================================
   member-1:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     image: tolerex-node:latest
-    container_name: tolerex-member-1
     command: ["./member", "-port=5556", "-metrics=9092", "-io=buffered"]
+    restart: unless-stopped
     environment:
       - LEADER_ADDR=leader:5555
       - MEMBER_ADDR=member-1:5556
@@ -42,12 +45,15 @@ services:
     networks:
       - tolerex-net
     volumes:
-      - member1-data:/root/internal/data
+      - member1-data:/app/internal/data
 
   member-2:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     image: tolerex-node:latest
-    container_name: tolerex-member-2
     command: ["./member", "-port=5557", "-metrics=9093", "-io=buffered"]
+    restart: unless-stopped
     environment:
       - LEADER_ADDR=leader:5555
       - MEMBER_ADDR=member-2:5557
@@ -59,12 +65,15 @@ services:
     networks:
       - tolerex-net
     volumes:
-      - member2-data:/root/internal/data
+      - member2-data:/app/internal/data
 
   member-3:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     image: tolerex-node:latest
-    container_name: tolerex-member-3
     command: ["./member", "-port=5558", "-metrics=9094", "-io=buffered"]
+    restart: unless-stopped
     environment:
       - LEADER_ADDR=leader:5555
       - MEMBER_ADDR=member-3:5558
@@ -76,16 +85,16 @@ services:
     networks:
       - tolerex-net
     volumes:
-      - member3-data:/root/internal/data
+      - member3-data:/app/internal/data
       
   # ========================================
   # MONITORING STACK
   # ========================================
   prometheus:
     image: prom/prometheus:latest
-    container_name: tolerex-prometheus
+    restart: unless-stopped
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus.cluster.yml:/etc/prometheus/prometheus.yml:ro
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
     ports:
@@ -95,7 +104,7 @@ services:
 
   grafana:
     image: grafana/grafana:latest
-    container_name: tolerex-grafana
+    restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     ports:

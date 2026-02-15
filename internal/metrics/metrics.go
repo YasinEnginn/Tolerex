@@ -49,7 +49,7 @@ var (
 	//   - method : Fully-qualified gRPC method name
 	//              (e.g. StorageService/Store)
 	//   - status : Logical request outcome
-	//              (e.g. OK, ERROR)
+	//              (e.g. success, error)
 	//
 	// Typical use cases:
 	//   - Traffic volume monitoring

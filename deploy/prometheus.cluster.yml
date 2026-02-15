@@ -16,3 +16,6 @@ scrape_configs:
           - member-1:9092
           - member-2:9093
           - member-3:9094
+          - member-4:9095
+          - member-5:9096
+          - member-6:9097

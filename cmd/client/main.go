@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	DEFAULT_ADDR     = "localhost:6666"
+	DEFAULT_ADDR     = "127.0.0.1:6666"
 	DIAL_TIMEOUT     = 3 * time.Second
 	RETRY_DELAY      = 2 * time.Second
 	BULK_FLUSH_EVERY = 1000
@@ -25,8 +25,23 @@ const (
 	SERVER_PROMPT = "tolerex> "
 )
 
+var bannerLines = map[string]struct{}{
+	"--------------------------------------------------": {},
+	"TOLEREX - Leader Node (Control Plane)":              {},
+	"Basic Commands:":                                    {},
+	"Utility:":                                           {},
+	"Examples:":                                          {},
+	"SET <id> <message>        Store a message":          {},
+	"<N> SET <message>         Bulk store N messages":    {},
+	"GET <id>                  Retrieve a message":       {},
+	"HELP                      Show this help":           {},
+	"QUIT | EXIT               Disconnect client":        {},
+	"SET 10 HELLO":                                       {},
+	"1000 SET HELLO":                                     {},
+}
+
 var (
-	addrStr    = flag.String("addr", DEFAULT_ADDR, "Leader TCP address or comma-separated cluster addresses (e.g., localhost:6666,localhost:6667)")
+	addrStr    = flag.String("addr", DEFAULT_ADDR, "Leader TCP address or comma-separated cluster addresses (e.g., 127.0.0.1:6666,127.0.0.1:6667)")
 	measure    = flag.Bool("measure", false, "Measure RTT per command using a separate TCP connection")
 	csv        = flag.Bool("csv", false, "Output measurements as CSV to stdout (Timestamp,ClientID,Operation,Count,Bytes,RTT_us,Mode,Status,PayloadSize). All logs/UI go to stderr.")
 	flushEvery = flag.Int("flush", BULK_FLUSH_EVERY, "Flush buffer after every N operations (default 1000). Set to 1 for unbuffered.")
@@ -93,6 +108,38 @@ func drainMeasureStartup(mconn net.Conn, r *bufio.Reader, maxDur time.Duration) 
 	}
 }
 
+func setupMeasureChannel(addrs []string) (net.Conn, *bufio.Reader, *bufio.Writer, error) {
+	const maxAttempts = 2
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		mconn := connectLoop(addrs)
+		mreader := bufio.NewReader(mconn)
+		mwriter := bufio.NewWriterSize(mconn, 64*1024)
+
+		timeout := 5 * time.Second
+		if attempt == maxAttempts {
+			timeout = 15 * time.Second
+		}
+
+		if err := drainMeasureStartup(mconn, mreader, timeout); err == nil {
+			return mconn, mreader, mwriter, nil
+		} else {
+			fmt.Fprintf(
+				os.Stderr,
+				"Measure channel sync failed (attempt %d/%d): %v\n",
+				attempt,
+				maxAttempts,
+				err,
+			)
+		}
+
+		_ = mconn.Close()
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return nil, nil, nil, fmt.Errorf("startup sync failed after retries")
+}
+
 func consumePrompt(mconn net.Conn, r *bufio.Reader) {
 	// Optimization: Reduce deadline calls if possible, use faster peek
 	_ = mconn.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
@@ -111,6 +158,14 @@ func consumePrompt(mconn net.Conn, r *bufio.Reader) {
 		}
 		return
 	}
+}
+
+func isControlBannerLine(line string) bool {
+	if strings.Contains(line, "TOLEREX - Leader Node") {
+		return true
+	}
+	_, ok := bannerLines[line]
+	return ok
 }
 
 func readSemanticLine(mconn net.Conn, r *bufio.Reader, timeout time.Duration) (string, error) {
@@ -134,11 +189,8 @@ func readSemanticLine(mconn net.Conn, r *bufio.Reader, timeout time.Duration) (s
 			return t, nil
 		}
 
-		// Skip UI/Banner elements efficiently
-		if t[0] == '-' || strings.Contains(t, "TOLEREX") ||
-			t == "Commands:" || t == "Examples:" || t[0] == 'S' || // SET <
-			t[0] == '<' || t[0] == 'G' || // GET <
-			t[0] == 'H' || t[0] == 'Q' { // HELP / QUIT
+		// Skip only exact banner/help lines, never data payloads.
+		if isControlBannerLine(t) {
 			continue
 		}
 		return t, nil
@@ -255,8 +307,12 @@ func main() {
 	cliConn := connectLoop(addrs)
 	defer cliConn.Close()
 
-	cliOut := os.Stdout
-	if *csv || *stressMins > 0 {
+	var cliOut io.Writer = os.Stdout
+	if *stressMins > 0 {
+		// In stress mode, discarding control-plane responses avoids
+		// background-job output buffering stalls.
+		cliOut = io.Discard
+	} else if *csv {
 		cliOut = os.Stderr
 	}
 
@@ -276,14 +332,13 @@ func main() {
 	stats := rttStats{}
 
 	if *measure {
-		mconn = connectLoop(addrs)
-		defer mconn.Close()
-		mreader = bufio.NewReader(mconn)
-		mwriter = bufio.NewWriterSize(mconn, 64*1024)
-		if err := drainMeasureStartup(mconn, mreader, 5*time.Second); err != nil {
+		var err error
+		mconn, mreader, mwriter, err = setupMeasureChannel(addrs)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return
+			os.Exit(1)
 		}
+		defer mconn.Close()
 	}
 
 	if *stressMins > 0 {

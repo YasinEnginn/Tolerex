@@ -86,6 +86,66 @@ services:
       - tolerex-net
     volumes:
       - member3-data:/app/internal/data
+
+  member-4:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: tolerex-node:latest
+    command: ["./member", "-port=5559", "-metrics=9095", "-io=buffered"]
+    restart: unless-stopped
+    environment:
+      - LEADER_ADDR=leader:5555
+      - MEMBER_ADDR=member-4:5559
+    ports:
+      - "5559:5559"
+      - "9095:9095"
+    depends_on:
+      - leader
+    networks:
+      - tolerex-net
+    volumes:
+      - member4-data:/app/internal/data
+
+  member-5:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: tolerex-node:latest
+    command: ["./member", "-port=5560", "-metrics=9096", "-io=buffered"]
+    restart: unless-stopped
+    environment:
+      - LEADER_ADDR=leader:5555
+      - MEMBER_ADDR=member-5:5560
+    ports:
+      - "5560:5560"
+      - "9096:9096"
+    depends_on:
+      - leader
+    networks:
+      - tolerex-net
+    volumes:
+      - member5-data:/app/internal/data
+
+  member-6:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: tolerex-node:latest
+    command: ["./member", "-port=5561", "-metrics=9097", "-io=buffered"]
+    restart: unless-stopped
+    environment:
+      - LEADER_ADDR=leader:5555
+      - MEMBER_ADDR=member-6:5561
+    ports:
+      - "5561:5561"
+      - "9097:9097"
+    depends_on:
+      - leader
+    networks:
+      - tolerex-net
+    volumes:
+      - member6-data:/app/internal/data
       
   # ========================================
   # MONITORING STACK
@@ -97,6 +157,7 @@ services:
       - ./prometheus.cluster.yml:/etc/prometheus/prometheus.yml:ro
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
     ports:
       - "9091:9090"
     networks:
@@ -106,7 +167,14 @@ services:
     image: grafana/grafana:latest
     restart: unless-stopped
     environment:
+      - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_DEFAULT_THEME=dark
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_DASHBOARDS_MIN_REFRESH_INTERVAL=1s
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
       - "3000:3000"
     networks:
@@ -123,3 +191,7 @@ volumes:
   member1-data:
   member2-data:
   member3-data:
+  member4-data:
+  member5-data:
+  member6-data:
+  grafana-data:

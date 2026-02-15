@@ -22,6 +22,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 func getenv(key, def string) string {
@@ -357,6 +358,100 @@ func registerToLeader(memberLog *log.Logger, leaderAddr, myAddr string) {
 // HEARTBEAT LOOP
 // ===================================================================================
 
+type heartbeatSession struct {
+	client proto.StorageServiceClient
+	close  func() error
+}
+
+type heartbeatConnectFn func() (*heartbeatSession, error)
+
+func sleepOrStop(stop <-chan struct{}, d time.Duration) bool {
+	if stop == nil {
+		time.Sleep(d)
+		return true
+	}
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-stop:
+		return false
+	}
+}
+
+func buildHeartbeatConnectFn(leaderAddr string, creds credentials.TransportCredentials) heartbeatConnectFn {
+	return func() (*heartbeatSession, error) {
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer dialCancel()
+
+		conn, err := grpc.DialContext(
+			dialCtx,
+			leaderAddr,
+			grpc.WithTransportCredentials(creds),
+			grpc.WithBlock(),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return &heartbeatSession{
+			client: proto.NewStorageServiceClient(conn),
+			close:  conn.Close,
+		}, nil
+	}
+}
+
+func runHeartbeatLoop(memberLog *log.Logger, leaderAddr, myAddr string, interval time.Duration, connect heartbeatConnectFn, stop <-chan struct{}) {
+	var session *heartbeatSession
+	defer func() {
+		if session != nil && session.close != nil {
+			_ = session.close()
+		}
+	}()
+
+	for {
+		if stop != nil {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+		}
+
+		if session == nil {
+			s, err := connect()
+			if err != nil {
+				logger.Warn(memberLog, "Leader unreachable: %v", err)
+				if !sleepOrStop(stop, interval) {
+					return
+				}
+				continue
+			}
+			session = s
+			logger.Info(memberLog, "Heartbeat channel established to leader: %s", leaderAddr)
+		}
+
+		hbCtx, hbCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, err := session.client.Heartbeat(hbCtx, &proto.HeartbeatRequest{Address: myAddr})
+		hbCancel()
+
+		if err != nil {
+			logger.Warn(memberLog, "Heartbeat failed: %v", err)
+			if session.close != nil {
+				_ = session.close()
+			}
+			session = nil
+		}
+
+		if !sleepOrStop(stop, interval) {
+			return
+		}
+	}
+}
+
 func startHeartbeat(memberLog *log.Logger, leaderAddr, myAddr string) {
 
 	logger.Info(memberLog, "Heartbeat loop started (interval=5s, leader=%s)", leaderAddr)
@@ -372,36 +467,10 @@ func startHeartbeat(memberLog *log.Logger, leaderAddr, myAddr string) {
 		logger.Fatal(memberLog, "mTLS client credentials error: %v", err)
 	}
 
+	connect := buildHeartbeatConnectFn(leaderAddr, creds)
+
 	go func() {
-		for {
-			dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			conn, err := grpc.DialContext(
-				dialCtx,
-				leaderAddr,
-				grpc.WithTransportCredentials(creds),
-				grpc.WithBlock(),
-			)
-			dialCancel()
-
-			if err != nil {
-				logger.Warn(memberLog, "Leader unreachable: %v", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			client := proto.NewStorageServiceClient(conn)
-
-			hbCtx, hbCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_, err = client.Heartbeat(hbCtx, &proto.HeartbeatRequest{Address: myAddr})
-			hbCancel()
-			conn.Close()
-
-			if err != nil {
-				logger.Warn(memberLog, "Heartbeat failed: %v", err)
-			}
-
-			time.Sleep(5 * time.Second)
-		}
+		runHeartbeatLoop(memberLog, leaderAddr, myAddr, 5*time.Second, connect, nil)
 	}()
 }
 

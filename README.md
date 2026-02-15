@@ -104,15 +104,18 @@ go build ./cmd/member
 go build ./cmd/launcher
 ```
 
-### Option 1: Automated Local Launch
+### Option 1: Automated Local Launch (Windows)
 
 ```bash
 go run ./cmd/launcher/main.go
 ```
 
-The launcher starts leader, members, and clients in separate terminals, and can save CSV output to `measured/`.
+The launcher starts leader and members in separate terminals.
+Stress clients are optional (set client count to `0` to skip).
+Recommended values: `6` members and `4` stress clients.
+Note: enter these values explicitly in the launcher prompts.
 
-### Option 2: Manual Launch
+### Option 2: Manual Host Launch
 
 Leader:
 
@@ -138,6 +141,38 @@ go run ./cmd/client/main.go -measure
 go run ./cmd/client/main.go -measure -csv > measured/client.csv
 go run ./cmd/client/main.go -measure -csv -id client-1 -offset 0
 go run ./cmd/client/main.go -measure -csv -id client-2 -offset 100000
+```
+
+### Option 3: Full Docker Cluster Launch
+
+```bash
+docker compose -f deploy/docker-compose.cluster.yml up -d --build
+# or: make deploy-cluster-up
+```
+
+Stop:
+
+```bash
+docker compose -f deploy/docker-compose.cluster.yml down
+# or: make deploy-cluster-down
+```
+
+After cluster startup, run clients from host (example):
+
+```bash
+make stress-client-30m
+```
+
+30-minute continuous measured stress client:
+
+```bash
+make stress-client-30m
+```
+
+30-minute continuous measured stress clients (parallel):
+
+```bash
+make stress-clients-30m
 ```
 
 Quick interactive commands:
@@ -177,6 +212,9 @@ docker compose -f deploy/docker-compose.cluster.yml up -d --build
 # or: make deploy-cluster-up
 ```
 
+Note: deploy Compose files intentionally do not run client containers.
+Run clients separately (for example `make stress-client-30m`).
+
 Access:
 
 - Prometheus targets: `http://localhost:9091/targets`
@@ -186,13 +224,15 @@ Import dashboard:
 
 - `deploy/grafana_dashboard.json`
 - Detailed deploy guide: `deploy/manual.md`
+- Datasource/dashboard provisioning is automatic on startup (no manual datasource setup required)
 
 The dashboard now includes:
 
-- Request rate and error rate time series
-- Per-method throughput and per-method error panels
-- Global latency quantiles (p50/p95/p99)
-- 5-minute summary stats (total requests, success/error rate, avg latency)
+- SRE summary KPIs (throughput, error rate, p95, p99)
+- Throughput/error breakdown by method and status
+- Instance-level throughput and scrape health
+- Stored message totals per member instance
+- Top methods by load for bottleneck analysis
 
 ## Service Ports
 
@@ -204,7 +244,10 @@ The dashboard now includes:
 | Member-1 gRPC | `5556` | Storage RPC |
 | Member-2 gRPC | `5557` | Storage RPC |
 | Member-3 gRPC | `5558` | Storage RPC |
-| Member Metrics | `9092-9094` | Prometheus scrape endpoints |
+| Member-4 gRPC | `5559` | Storage RPC |
+| Member-5 gRPC | `5560` | Storage RPC |
+| Member-6 gRPC | `5561` | Storage RPC |
+| Member Metrics | `9092-9097` | Prometheus scrape endpoints |
 | Prometheus UI | `9091` | Exposed from container port `9090` |
 | Grafana UI | `3000` | Dashboard and alerting UI |
 
@@ -274,7 +317,7 @@ flowchart LR
 Main flags:
 
 ```text
--addr string      Leader TCP address (default "localhost:6666")
+-addr string      Leader TCP address (default "127.0.0.1:6666")
 -measure          Enable RTT measurement
 -csv              Emit CSV to stdout (requires -measure)
 -id string        Client ID (default "client")
@@ -302,6 +345,8 @@ Common command cookbook:
 
 - For realistic throughput testing, run client without `-measure` first.
 - Use `-measure -csv` for latency analysis, not peak TPS measurement.
+- For a sustained 30-minute measured run, use `make stress-client-30m`.
+- For higher pressure tests (parallel clients), use `make stress-clients-30m`.
 - Keep member `-io` mode explicit (`buffered` or `unbuffered`) in performance comparisons.
 - Prefer `make deploy-cluster-up` for consistent local demo environments.
 
@@ -311,7 +356,7 @@ Leader starts but client cannot connect:
 
 - Check `LEADER_TCP_BIND` and `LEADER_TCP_PORT`.
 - Verify no other process is using port `6666`.
-- Try `Test-NetConnection localhost -Port 6666` on PowerShell.
+- Try `Test-NetConnection 127.0.0.1 -Port 6666` on PowerShell.
 
 Member fails to register:
 
@@ -372,7 +417,10 @@ go test -run '^$' -bench 'Benchmark(WriteMessage_|LeastLoaded_|P2C_)' ./internal
 |-- proto/
 |-- scripts/
 |   |-- run-tests.ps1
+|   |-- run-stress-client.ps1
+|   |-- run-stress-clients.ps1
 |   |-- clean-test-artifacts.ps1
+|   |-- clean-docker-artifacts.ps1
 |   `-- clean-runtime-artifacts.ps1
 |-- test_data/
 |-- Makefile
@@ -399,6 +447,12 @@ make deploy-monitoring-up
 make deploy-monitoring-down
 make deploy-cluster-up
 make deploy-cluster-down
+make deploy-cluster-status
+make deploy-cluster-logs
+make stress-client-30m
+make stress-client-30m-unbuffered
+make stress-clients-30m
+make stress-clients-30m-unbuffered
 ```
 
 Cleanup artifacts:
@@ -406,14 +460,11 @@ Cleanup artifacts:
 ```bash
 make clean-test-artifacts
 make clean-runtime-artifacts
+make clean-docker-artifacts
 make clean-all-artifacts
 ```
 
 Details are in `docs/testing.md`.
-
-
-
-
 
 ## Test Scenarios
 

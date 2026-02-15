@@ -118,6 +118,36 @@ const (
 	rpcTimeout               = 2 * time.Second
 )
 
+func resolveProjectPath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return path
+	}
+
+	dir := wd
+	for {
+		candidate := filepath.Join(dir, path)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	return path
+}
+
 // ===================================================================================
 // gRPC: HEARTBEAT
 // ===================================================================================
@@ -278,20 +308,18 @@ func NewLeaderServer(members []string, toleranceFile string) (*LeaderServer, err
 		leader.Balancer = &balancer.LeastLoadedBalancer{}
 	}
 
-	// Prepare mTLS credentials for Leader→Member RPC (if not in test mode).
-	if os.Getenv("TOLEREX_TEST_MODE") != "1" {
-		creds, err := security.NewMTLSClientCreds(
-			"config/tls/leader.crt",
-			"config/tls/leader.key",
-			"config/tls/ca.crt",
-			"member",
-		)
-		if err != nil {
-			logger.Error(logger.Leader, "Failed to initialize mTLS creds: %v", err)
-			return nil, fmt.Errorf("failed to init leader->member mTLS creds: %w", err)
-		}
-		leader.memberDialOpt = grpc.WithTransportCredentials(creds)
+	// Prepare mTLS credentials for Leader->Member RPC in all modes.
+	creds, err := security.NewMTLSClientCreds(
+		resolveProjectPath("config/tls/leader.crt"),
+		resolveProjectPath("config/tls/leader.key"),
+		resolveProjectPath("config/tls/ca.crt"),
+		"member",
+	)
+	if err != nil {
+		logger.Error(logger.Leader, "Failed to initialize mTLS creds: %v", err)
+		return nil, fmt.Errorf("failed to init leader->member mTLS creds: %w", err)
 	}
+	leader.memberDialOpt = grpc.WithTransportCredentials(creds)
 
 	// Load persisted state from disk (best-effort).
 	if err := leader.loadState(); err != nil {
@@ -540,13 +568,6 @@ func (s *LeaderServer) Store(ctx context.Context, msg *pb.StoredMessage) (*pb.St
 // ===================================================================================
 
 func (s *LeaderServer) Retrieve(ctx context.Context, req *pb.MessageID) (*pb.StoredMessage, error) {
-	// WARNING: test-only shortcut.
-	// If TOLEREX_TEST_MODE=1 is enabled outside tests, Retrieve will bypass
-	// member lookup and always return a dummy payload.
-	if os.Getenv("TOLEREX_TEST_MODE") == "1" {
-		return &pb.StoredMessage{Id: req.Id, Text: "dummy"}, nil
-	}
-
 	log := logger.WithContext(ctx, logger.Leader)
 	logger.Info(log, "Retrieve request received: msg_id=%d", req.Id)
 

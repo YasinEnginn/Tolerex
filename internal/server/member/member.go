@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"tolerex/internal/logger"
+	"tolerex/internal/metrics"
 	"tolerex/internal/storage"
 	pb "tolerex/proto/gen"
 
@@ -168,6 +169,7 @@ func (s *MemberServer) Store(ctx context.Context, msg *pb.StoredMessage) (*pb.St
 	}
 
 	logger.Info(log, "store ok msg_id=%d duration=%s", msg.Id, time.Since(start))
+	metrics.MemberStoredMessagesTotal.Inc()
 	return &pb.StoreResult{Ok: true}, nil
 }
 

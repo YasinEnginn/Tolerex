@@ -90,6 +90,15 @@ var (
 		},
 		[]string{"method"},
 	)
+
+	// MemberStoredMessagesTotal counts successful Store writes on each member.
+	// It has no custom labels; per-member split is done via Prometheus `instance`.
+	MemberStoredMessagesTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "member_stored_messages_total",
+			Help: "Total number of messages stored successfully by a member",
+		},
+	)
 )
 
 // ===================================================================================
@@ -109,5 +118,6 @@ func Init() {
 	prometheus.MustRegister(
 		GrpcRequestsTotal,
 		GrpcRequestDuration,
+		MemberStoredMessagesTotal,
 	)
 }

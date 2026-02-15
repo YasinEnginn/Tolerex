@@ -16,3 +16,6 @@ scrape_configs:
           - host.docker.internal:9092
           - host.docker.internal:9093
           - host.docker.internal:9094
+          - host.docker.internal:9095
+          - host.docker.internal:9096
+          - host.docker.internal:9097

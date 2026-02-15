@@ -201,3 +201,46 @@ func TestRetrieve_NotFound_WhenAllTargetsFail(t *testing.T) {
 		t.Fatalf("unexpected dialed targets: got=%v want=%v", dialed, []string{"m1", "m2"})
 	}
 }
+
+func TestRetrieve_TestModeStillUsesReplicaPath(t *testing.T) {
+	t.Setenv("TOLEREX_TEST_MODE", "1")
+
+	addr, stop := startRetrieveGRPCServer(t, &retrieveStubServer{text: "from-replica"})
+	defer stop()
+
+	conn := dialTestGRPC(t, addr)
+	defer conn.Close()
+
+	var mu sync.Mutex
+	var dialed []string
+
+	s := &LeaderServer{
+		Members: []string{"m1"},
+		MsgMap: map[int][]string{
+			77: {"m1"},
+		},
+		MemberLog: map[string]*shared.MemberInfo{
+			"m1": {Address: "m1", Alive: true},
+		},
+		dialFn: func(addr string) (*grpc.ClientConn, error) {
+			mu.Lock()
+			dialed = append(dialed, addr)
+			mu.Unlock()
+			return conn, nil
+		},
+	}
+
+	res, err := s.Retrieve(context.Background(), &pb.MessageID{Id: 77})
+	if err != nil {
+		t.Fatalf("Retrieve failed: %v", err)
+	}
+	if res == nil || res.Text != "from-replica" {
+		t.Fatalf("unexpected retrieve result: %+v", res)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(dialed, []string{"m1"}) {
+		t.Fatalf("expected replica path dial, got=%v", dialed)
+	}
+}

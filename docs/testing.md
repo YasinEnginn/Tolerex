@@ -51,6 +51,13 @@ make clean-runtime-artifacts
 make clean-runtime-artifacts-dry
 ```
 
+Cleanup Docker artifacts created by this repository:
+
+```bash
+make clean-docker-artifacts
+make clean-docker-artifacts-dry
+```
+
 Cleanup everything:
 
 ```bash

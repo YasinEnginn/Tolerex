@@ -5,6 +5,8 @@ This guide covers two deploy modes:
 - Monitoring-only (Leader/Member processes run on host)
 - Full Docker cluster (Leader + Members + Prometheus + Grafana in containers)
 
+Client processes are intentionally excluded from deploy Compose files.
+
 ## Prerequisites
 
 - Docker Engine
@@ -12,7 +14,7 @@ This guide covers two deploy modes:
 
 ## Mode 1: Monitoring Only (Host Services)
 
-1. Run leader/member processes on host (ports `9090`, `9092-9094`).
+1. Run leader/member processes on host (ports `9090`, `9092-9097`).
 2. Start monitoring stack:
 
 ```bash
@@ -31,13 +33,25 @@ docker compose -f deploy/docker-compose.cluster.yml up -d --build
 
 This uses:
 
-- `deploy/prometheus.cluster.yml` for in-network scrape targets (`leader`, `member-1`, `member-2`, `member-3`)
+- `deploy/prometheus.cluster.yml` for in-network scrape targets (`leader`, `member-1` ... `member-6`)
 - `Dockerfile` image `tolerex-node:latest` for leader/member services
 
 Stop cluster:
 
 ```bash
 docker compose -f deploy/docker-compose.cluster.yml down
+```
+
+Run a 30-minute measured stress client from repo root:
+
+```bash
+make stress-client-30m
+```
+
+Run 4 measured stress clients in parallel:
+
+```bash
+make stress-clients-30m
 ```
 
 ## Access
@@ -49,9 +63,11 @@ docker compose -f deploy/docker-compose.cluster.yml down
 
 ## Grafana Dashboard
 
-Import:
+Grafana is provisioned automatically at startup:
 
-- `deploy/grafana_dashboard.json`
+- Prometheus datasource (`deploy/grafana/provisioning/datasources/prometheus.yml`)
+- Dashboard provider (`deploy/grafana/provisioning/dashboards/dashboards.yml`)
+- Dashboard JSON (`deploy/grafana_dashboard.json`)
 
 ## Verification
 

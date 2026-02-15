@@ -82,6 +82,10 @@ func TestNewLeaderServer_InitState(t *testing.T) {
 	if len(leader.MsgMap) != 0 {
 		t.Errorf("expected empty MsgMap, got %d entries", len(leader.MsgMap))
 	}
+
+	if leader.memberDialOpt == nil {
+		t.Fatal("memberDialOpt should be initialized even in test mode")
+	}
 }
 
 func TestStore_NotEnoughAliveMembers(t *testing.T) {

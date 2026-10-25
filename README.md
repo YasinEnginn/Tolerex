@@ -1,6 +1,6 @@
 # Tolerex
 
-[![CI](https://github.com/YasinEnginExpert/Dagitik_Mesaj_Kayit_Servisi/actions/workflows/ci.yml/badge.svg)](https://github.com/YasinEnginExpert/Dagitik_Mesaj_Kayit_Servisi/actions/workflows/ci.yml)
+[![CI](https://github.com/YasinEnginn/Tolerex/actions/workflows/ci.yml/badge.svg)](https://github.com/YasinEnginn/Tolerex/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Tolerex is a compact distributed message-storage service written in Go. A single leader accepts a line-based TCP protocol, selects storage members, and replicates each message over mutually authenticated gRPC.
@@ -59,8 +59,8 @@ docker compose version
 ## Get the project
 
 ```powershell
-git clone https://github.com/YasinEnginExpert/Dagitik_Mesaj_Kayit_Servisi.git
-Set-Location Dagitik_Mesaj_Kayit_Servisi
+git clone https://github.com/YasinEnginn/Tolerex.git
+Set-Location Tolerex
 go mod download
 ```
 

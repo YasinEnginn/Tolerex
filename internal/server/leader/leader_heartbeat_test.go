@@ -2,12 +2,29 @@ package leader
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"testing"
 	"time"
 
 	"tolerex/internal/server/shared"
 	pb "tolerex/proto/gen"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
+
+func memberTLSContext(commonName string) context.Context {
+	cert := &x509.Certificate{Subject: pkix.Name{CommonName: commonName}}
+	tlsInfo := credentials.TLSInfo{State: tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
+	}}
+	return peer.NewContext(context.Background(), &peer.Peer{AuthInfo: tlsInfo})
+}
 
 func waitUntil(t *testing.T, timeout time.Duration, check func() bool) {
 	t.Helper()
@@ -80,7 +97,7 @@ func TestHeartbeatWatcher_KeepsMemberAliveWithFrequentHeartbeats(t *testing.T) {
 		for {
 			select {
 			case <-ticker.C:
-				_, _ = s.Heartbeat(context.Background(), &pb.HeartbeatRequest{Address: "m1"})
+				_, _ = s.Heartbeat(memberTLSContext("member"), &pb.HeartbeatRequest{Address: "m1"})
 			case <-stop:
 				return
 			}
@@ -96,5 +113,16 @@ func TestHeartbeatWatcher_KeepsMemberAliveWithFrequentHeartbeats(t *testing.T) {
 
 	if !alive {
 		t.Fatal("member should stay alive when heartbeats are frequent")
+	}
+}
+
+func TestMemberControlRPCsRequireMemberIdentity(t *testing.T) {
+	s := &LeaderServer{MemberLog: map[string]*shared.MemberInfo{}, MsgMap: map[int][]string{}}
+	if _, err := s.Heartbeat(context.Background(), &pb.HeartbeatRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %v", err)
+	}
+	wrongRole := memberTLSContext("leader")
+	if _, err := s.RegisterMember(wrongRole, &pb.MemberInfo{Address: "localhost:5556"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"net"
@@ -22,258 +23,52 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 )
 
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+func getenv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
 	}
-	return def
+	return fallback
 }
 
-// ===================================================================================
-// TOLEREX – MEMBER NODE BOOTSTRAP
-// ===================================================================================
-//
-// This file is the **infrastructure entry point** for a Member node in the
-// Tolerex distributed, fault-tolerant storage system.
-//
-// From an architectural perspective, a Member node:
-//
-//   - Acts as a stateful storage replica
-//   - Accepts Store / Retrieve RPCs exclusively from the Leader
-//   - Persists data locally to disk
-//   - Does NOT perform coordination, replication strategy, or consensus
-//
-// This file intentionally contains **no business logic**.
-// Its sole responsibility is wiring together runtime components:
-//
-//   - Logging initialization
-//   - Command-line configuration
-//   - Secure gRPC server bootstrap (mTLS)
-//   - Leader registration
-//   - Periodic heartbeat emission
-//   - Graceful shutdown handling
-//
-// This file serves as the **composition root** of the Member process.
-//
-// ===================================================================================
-
 func main() {
-
-	// -------------------------------------------------------------------------------
-	// LOGGING INITIALIZATION
-	// -------------------------------------------------------------------------------
-	//
-	// Initializes the global logging subsystem for the Member process.
-	// Logging includes structured output, rotation, and runtime-adjustable levels.
-	// All logs are prefixed with the "Member" role identifier.
-	// This must be done before any other operations to ensure
-	// that all components have access to logging facilities.
-
-	logger.Init()
-	logger.SetLevel(logger.INFO)
-
-	memberLog := logger.Member
-	logger.Info(memberLog, "Member server starting")
-
-	// -------------------------------------------------------------------------------
-	// COMMAND-LINE FLAGS
-	// -------------------------------------------------------------------------------
-	//
-	// Each Member instance is configured via CLI flags:
-	//
-	//   - port : gRPC listening port (unique per Member)
-	//   - io   : disk I/O mode (buffered | unbuffered)
-	// These flags allow flexible deployment and testing.
-	// Defaults are provided for convenience.
-	// The port flag is critical to ensure no conflicts between
-	// multiple Member instances on the same host.
-	// The I/O mode flag allows experimentation with different
-	// disk persistence strategies.
-
-	port := flag.String(
-		"port",
-		getenv("MEMBER_GRPC_PORT", "5556"),
-		"gRPC port",
-	)
-
-	ioMode := flag.String(
-		"io",
-		getenv("MEMBER_IO_MODE", storage.ModeBuffered),
-		"disk IO mode: buffered | unbuffered",
-	)
-
-	metricsPort := flag.String(
-		"metrics",
-		getenv("MEMBER_METRICS_PORT", "9092"),
-		"Prometheus metrics port",
-	)
-
+	port := flag.String("port", getenv("MEMBER_GRPC_PORT", "5556"), "gRPC port")
+	ioMode := flag.String("io", getenv("MEMBER_IO_MODE", storage.ModeBuffered), "disk IO mode: buffered | unbuffered")
+	metricsPort := flag.String("metrics", getenv("MEMBER_METRICS_PORT", "9092"), "Prometheus metrics port")
 	flag.Parse()
 
-	leaderAddr := getenv("LEADER_ADDR", "localhost:5555")
-	myAddr := os.Getenv("MEMBER_ADDR")
-	if myAddr == "" {
-		myAddr = "localhost:" + *port
+	logger.Init("member-" + *port)
+	memberLog := logger.Member
+	if !storage.IsValidMode(*ioMode) {
+		logger.Fatal(memberLog, "Invalid disk I/O mode %q", *ioMode)
 	}
 
-	// -------------------------------------------------------------------------------
-	// PROMETHEUS METRICS INITIALIZATION
-	// -------------------------------------------------------------------------------
-	//
-	// Registers all Prometheus metric collectors and exposes
-	// an HTTP /metrics endpoint for scraping.
-	//
-	// This HTTP server is intentionally decoupled from gRPC
-	// and runs on a dedicated port.
-
-	metrics.Init()
-
-	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
-
-		addr := ":" + *metricsPort
-		logger.Info(memberLog, "Metrics endpoint listening on %s", addr)
-
-		if err := http.ListenAndServe(addr, mux); err != nil {
-			logger.Warn(memberLog, "Metrics server stopped: %v", err)
-		}
-	}()
-
-	// -------------------------------------------------------------------------------
-	// DATA DIRECTORY INITIALIZATION
-	// -------------------------------------------------------------------------------
-	//
-	// Each Member maintains an isolated data directory based on its port.
-	// This ensures:
-	//   - No cross-member disk interference
-	//   - Deterministic storage layout
-	//   - Easy debugging and cleanup
-	// The directory is created if it does not exist.
-	// Any failure to create the directory results in process termination.
-	// This is a critical step to ensure that the Member can persist data reliably.
-	// The directory follows the pattern:
-	//   internal/data/member-<port>/
-	// This convention simplifies management of multiple Member instances.
-
+	leaderAddr := getenv("LEADER_ADDR", "localhost:5555")
+	memberAddr := getenv("MEMBER_ADDR", "localhost:"+*port)
 	dataDir := filepath.Join("internal", "data", "member-"+*port)
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		logger.Fatal(memberLog, "Data directory could not be created: %v", err)
 	}
 
-	// -------------------------------------------------------------------------------
-	// GRACEFUL SHUTDOWN HANDLING
-	// -------------------------------------------------------------------------------
-	//
-	// Listens for OS termination signals (SIGINT, SIGTERM).
-	// On shutdown:
-	//   - Logs the event
-	//   - Allows controlled process termination
-	//
-	// Note:
-	// This is intentionally minimal. Any cleanup policy (ephemeral storage, etc.)
-	// is handled explicitly by design decisions elsewhere.
-	// The focus here is on logging and orderly shutdown.
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		<-sig
-		logger.Warn(memberLog, "Shutdown signal received, terminating member process")
-		os.Exit(0)
-	}()
-
-	// -------------------------------------------------------------------------------
-	// START MEMBER gRPC SERVER
-	// -------------------------------------------------------------------------------
-	//
-	// The gRPC server:
-	//   - Accepts Store / Retrieve RPCs
-	//   - Is secured with mutual TLS (mTLS)
-	//   - Is instrumented with logging, recovery, request IDs, and metrics
-	//
-	// It is launched in a separate goroutine so that registration and heartbeat
-	// logic can proceed concurrently.
-	// This ensures the Member is operational as soon as possible.
-	// Any fatal errors during server startup result in process termination.
-	// This is critical to ensure availability and reliability.
-	// The server binds to the specified port and uses the designated data directory
-	// and I/O mode for disk operations.
-	// This setup is essential for the Member's role as a storage worker in the Tolerex system.
-
-	go startMemberGRPC(memberLog, *port, dataDir, *ioMode)
-
-	// -------------------------------------------------------------------------------
-	// LEADER REGISTRATION
-	// -------------------------------------------------------------------------------
-	//
-	// After startup, the Member explicitly registers itself with the Leader.
-	// A short delay ensures the gRPC server is fully listening before registration.
-	// Registration involves:
-	//   - Establishing a secure mTLS connection to the Leader
-	//   - Sending its network address
-	// Any failure to register results in process termination.
-	// This is critical to ensure the Member is recognized and can participate
-	// in the distributed storage system.
-	// Successful registration is logged for auditing and debugging purposes.
-	// This step is essential for the Member to become an active participant
-	// in the Tolerex distributed architecture.
-	// A brief sleep is used to allow the server to start before registration.
-
-	time.Sleep(500 * time.Millisecond)
-	registerToLeader(memberLog, leaderAddr, myAddr)
-
-	// -------------------------------------------------------------------------------
-	// HEARTBEAT LOOP
-	// -------------------------------------------------------------------------------
-	//
-	// Starts a background heartbeat routine that:
-	//   - Periodically contacts the Leader
-	//   - Updates liveness state
-	//   - Allows the Leader to detect failures via timeout
-
-	startHeartbeat(memberLog, leaderAddr, myAddr)
-
-	// -------------------------------------------------------------------------------
-	// BLOCK FOREVER
-	// -------------------------------------------------------------------------------
-	//
-	// The Member process is designed to run indefinitely until terminated.
-
-	select {}
-}
-
-// ===================================================================================
-// MEMBER gRPC SERVER BOOTSTRAP
-// ===================================================================================
-
-func startMemberGRPC(memberLog *log.Logger, port, dataDir, ioMode string) {
-
-	// Bind TCP listener
-	listener, err := net.Listen("tcp", ":"+port)
-	if err != nil {
-		logger.Fatal(memberLog, "Failed to listen on port %s: %v", port, err)
-	}
-
-	logger.Info(memberLog, "Starting gRPC server on port %s", port)
-
-	// Load mTLS server credentials
-	creds, err := security.NewMTLSServerCreds(
-		"config/tls/member.crt",
-		"config/tls/member.key",
-		"config/tls/ca.crt",
+	serverCreds, err := security.NewMTLSServerCreds(
+		getenv("MEMBER_CERT_FILE", "config/tls/member.crt"),
+		getenv("MEMBER_KEY_FILE", "config/tls/member.key"),
+		getenv("CA_CERT_FILE", "config/tls/ca.crt"),
 	)
 	if err != nil {
-		logger.Fatal(memberLog, "Failed to load mTLS credentials: %v", err)
+		logger.Fatal(memberLog, "Failed to load member server credentials: %v", err)
 	}
 
-	// Construct gRPC server with middleware chain
+	listener, err := net.Listen("tcp", ":"+*port)
+	if err != nil {
+		logger.Fatal(memberLog, "Failed to listen on port %s: %v", *port, err)
+	}
 	grpcServer := grpc.NewServer(
-		grpc.Creds(creds),
+		grpc.Creds(serverCreds),
 		grpc.ChainUnaryInterceptor(
 			middleware.RequestIDInterceptor(),
 			middleware.LoggingInterceptor("member"),
@@ -281,82 +76,111 @@ func startMemberGRPC(memberLog *log.Logger, port, dataDir, ioMode string) {
 			middleware.RecoveryInterceptor("member"),
 		),
 	)
+	proto.RegisterStorageServiceServer(grpcServer, &member.MemberServer{DataDir: dataDir, IOMode: *ioMode})
 
-	// Create MemberServer instance (storage worker)
-	srv := &member.MemberServer{
-		DataDir: dataDir,
-		IOMode:  ioMode,
+	metrics.Init()
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	metricsServer := &http.Server{
+		Addr:              ":" + *metricsPort,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
-	// Register gRPC service
-	proto.RegisterStorageServiceServer(grpcServer, srv)
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	ctx, cancel := context.WithCancel(signalCtx)
+	defer cancel()
+	serverErr := make(chan error, 2)
 
-	logger.Info(
-		memberLog,
-		"Member running on port %s (dataDir=%s, io=%s)",
-		port,
-		dataDir,
-		ioMode,
-	)
+	go func() {
+		logger.Info(memberLog, "Member gRPC listening on :%s (data=%s, io=%s)", *port, dataDir, *ioMode)
+		if err := grpcServer.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			serverErr <- err
+			cancel()
+		}
+	}()
+	go func() {
+		logger.Info(memberLog, "Metrics listening on :%s", *metricsPort)
+		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+			cancel()
+		}
+	}()
 
-	// Start serving requests
-	if err := grpcServer.Serve(listener); err != nil {
-		logger.Fatal(memberLog, "gRPC server terminated: %v", err)
+	if err := registerToLeader(ctx, memberLog, leaderAddr, memberAddr); err != nil {
+		if ctx.Err() == nil {
+			logger.Error(memberLog, "Leader registration stopped: %v", err)
+		}
+	} else {
+		heartbeatDone, err := startHeartbeat(ctx, memberLog, leaderAddr, memberAddr)
+		if err != nil {
+			logger.Error(memberLog, "Heartbeat startup failed: %v", err)
+			cancel()
+		} else {
+			defer func() { <-heartbeatDone }()
+		}
 	}
+
+	<-ctx.Done()
+	select {
+	case err := <-serverErr:
+		logger.Error(memberLog, "Member server stopped: %v", err)
+	default:
+		logger.Info(memberLog, "Member shutting down")
+	}
+
+	grpcDone := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(grpcDone)
+	}()
+	select {
+	case <-grpcDone:
+	case <-time.After(5 * time.Second):
+		grpcServer.Stop()
+		<-grpcDone
+	}
+
+	httpCtx, httpCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = metricsServer.Shutdown(httpCtx)
+	httpCancel()
 }
 
-// ===================================================================================
-// LEADER REGISTRATION ROUTINE
-// ===================================================================================
-
-func registerToLeader(memberLog *log.Logger, leaderAddr, myAddr string) {
-
-	logger.Info(memberLog, "Registering to leader at %s as %s", leaderAddr, myAddr)
-
-	// Load mTLS client credentials
+func registerToLeader(ctx context.Context, memberLog *log.Logger, leaderAddr, memberAddr string) error {
 	creds, err := security.NewMTLSClientCreds(
-		"config/tls/member.crt",
-		"config/tls/member.key",
-		"config/tls/ca.crt",
+		getenv("MEMBER_CERT_FILE", "config/tls/member.crt"),
+		getenv("MEMBER_KEY_FILE", "config/tls/member.key"),
+		getenv("CA_CERT_FILE", "config/tls/ca.crt"),
 		"leader",
 	)
 	if err != nil {
-		logger.Fatal(memberLog, "mTLS client credentials error: %v", err)
+		return err
 	}
 
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		conn, err := grpc.DialContext(
-			ctx,
-			leaderAddr,
-			grpc.WithTransportCredentials(creds),
-			grpc.WithBlock(),
-		)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		conn, err := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(creds))
+		if err == nil {
+			callCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			reply, callErr := proto.NewStorageServiceClient(conn).RegisterMember(callCtx, &proto.MemberInfo{Address: memberAddr})
 			cancel()
-			logger.Warn(memberLog, "Leader not ready yet, retrying registration: %v", err)
-			time.Sleep(2 * time.Second)
-			continue
+			_ = conn.Close()
+			if callErr == nil && reply != nil && reply.Ok {
+				logger.Info(memberLog, "Registered with leader as %s", memberAddr)
+				return nil
+			}
+			err = callErr
 		}
-
-		client := proto.NewStorageServiceClient(conn)
-		_, err = client.RegisterMember(ctx, &proto.MemberInfo{Address: myAddr})
-		conn.Close()
-		cancel()
-		if err != nil {
-			logger.Warn(memberLog, "Leader registration failed, retrying: %v", err)
-			time.Sleep(2 * time.Second)
-			continue
+		logger.Warn(memberLog, "Leader registration failed; retrying in 2s: %v", err)
+		if !sleepOrStop(ctx.Done(), 2*time.Second) {
+			return ctx.Err()
 		}
-
-		logger.Info(memberLog, "Successfully registered to leader: %s", myAddr)
-		return
 	}
 }
-
-// ===================================================================================
-// HEARTBEAT LOOP
-// ===================================================================================
 
 type heartbeatSession struct {
 	client proto.StorageServiceClient
@@ -365,15 +189,13 @@ type heartbeatSession struct {
 
 type heartbeatConnectFn func() (*heartbeatSession, error)
 
-func sleepOrStop(stop <-chan struct{}, d time.Duration) bool {
+func sleepOrStop(stop <-chan struct{}, duration time.Duration) bool {
 	if stop == nil {
-		time.Sleep(d)
+		time.Sleep(duration)
 		return true
 	}
-
-	timer := time.NewTimer(d)
+	timer := time.NewTimer(duration)
 	defer timer.Stop()
-
 	select {
 	case <-timer.C:
 		return true
@@ -384,27 +206,15 @@ func sleepOrStop(stop <-chan struct{}, d time.Duration) bool {
 
 func buildHeartbeatConnectFn(leaderAddr string, creds credentials.TransportCredentials) heartbeatConnectFn {
 	return func() (*heartbeatSession, error) {
-		dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer dialCancel()
-
-		conn, err := grpc.DialContext(
-			dialCtx,
-			leaderAddr,
-			grpc.WithTransportCredentials(creds),
-			grpc.WithBlock(),
-		)
+		conn, err := grpc.NewClient(leaderAddr, grpc.WithTransportCredentials(creds))
 		if err != nil {
 			return nil, err
 		}
-
-		return &heartbeatSession{
-			client: proto.NewStorageServiceClient(conn),
-			close:  conn.Close,
-		}, nil
+		return &heartbeatSession{client: proto.NewStorageServiceClient(conn), close: conn.Close}, nil
 	}
 }
 
-func runHeartbeatLoop(memberLog *log.Logger, leaderAddr, myAddr string, interval time.Duration, connect heartbeatConnectFn, stop <-chan struct{}) {
+func runHeartbeatLoop(memberLog *log.Logger, leaderAddr, memberAddr string, interval time.Duration, connect heartbeatConnectFn, stop <-chan struct{}) {
 	var session *heartbeatSession
 	defer func() {
 		if session != nil && session.close != nil {
@@ -413,16 +223,14 @@ func runHeartbeatLoop(memberLog *log.Logger, leaderAddr, myAddr string, interval
 	}()
 
 	for {
-		if stop != nil {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+		select {
+		case <-stop:
+			return
+		default:
 		}
 
 		if session == nil {
-			s, err := connect()
+			connected, err := connect()
 			if err != nil {
 				logger.Warn(memberLog, "Leader unreachable: %v", err)
 				if !sleepOrStop(stop, interval) {
@@ -430,15 +238,26 @@ func runHeartbeatLoop(memberLog *log.Logger, leaderAddr, myAddr string, interval
 				}
 				continue
 			}
-			session = s
-			logger.Info(memberLog, "Heartbeat channel established to leader: %s", leaderAddr)
+			session = connected
+			logger.Debug(memberLog, "Heartbeat channel established to %s", leaderAddr)
 		}
 
-		hbCtx, hbCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_, err := session.client.Heartbeat(hbCtx, &proto.HeartbeatRequest{Address: myAddr})
-		hbCancel()
-
+		heartbeatCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, err := session.client.Heartbeat(heartbeatCtx, &proto.HeartbeatRequest{Address: memberAddr})
+		cancel()
 		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				registerCtx, registerCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				reply, registerErr := session.client.RegisterMember(registerCtx, &proto.MemberInfo{Address: memberAddr})
+				registerCancel()
+				if registerErr == nil && reply != nil && reply.Ok {
+					logger.Info(memberLog, "Member re-registered after leader state loss: %s", memberAddr)
+					if !sleepOrStop(stop, interval) {
+						return
+					}
+					continue
+				}
+			}
 			logger.Warn(memberLog, "Heartbeat failed: %v", err)
 			if session.close != nil {
 				_ = session.close()
@@ -452,31 +271,20 @@ func runHeartbeatLoop(memberLog *log.Logger, leaderAddr, myAddr string, interval
 	}
 }
 
-func startHeartbeat(memberLog *log.Logger, leaderAddr, myAddr string) {
-
-	logger.Info(memberLog, "Heartbeat loop started (interval=5s, leader=%s)", leaderAddr)
-
-	// Prepare mTLS client credentials once
+func startHeartbeat(ctx context.Context, memberLog *log.Logger, leaderAddr, memberAddr string) (<-chan struct{}, error) {
 	creds, err := security.NewMTLSClientCreds(
-		"config/tls/member.crt",
-		"config/tls/member.key",
-		"config/tls/ca.crt",
+		getenv("MEMBER_CERT_FILE", "config/tls/member.crt"),
+		getenv("MEMBER_KEY_FILE", "config/tls/member.key"),
+		getenv("CA_CERT_FILE", "config/tls/ca.crt"),
 		"leader",
 	)
 	if err != nil {
-		logger.Fatal(memberLog, "mTLS client credentials error: %v", err)
+		return nil, err
 	}
-
-	connect := buildHeartbeatConnectFn(leaderAddr, creds)
-
+	done := make(chan struct{})
 	go func() {
-		runHeartbeatLoop(memberLog, leaderAddr, myAddr, 5*time.Second, connect, nil)
+		defer close(done)
+		runHeartbeatLoop(memberLog, leaderAddr, memberAddr, 5*time.Second, buildHeartbeatConnectFn(leaderAddr, creds), ctx.Done())
 	}()
+	return done, nil
 }
-
-/*
-USAGE EXAMPLE:
-
-  go run cmd/member/main.go -port=5556 -io=buffered
-
-*/

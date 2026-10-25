@@ -10,11 +10,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ($DurationMinutes -lt 0 -or $Flush -lt 1) {
+    throw "DurationMinutes must be >= 0 and Flush must be >= 1"
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
-$args = @(
-    "./cmd/client/main.go",
+$clientArgs = @(
+    "./cmd/client",
     "-addr", $Addr,
     "-stress", $DurationMinutes,
     "-id", $ClientID,
@@ -29,13 +33,13 @@ if (-not $NoMeasure) {
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $csvPath = Join-Path $measuredDir "$ClientID-$timestamp.csv"
 
-    $args += @("-measure", "-csv")
+    $clientArgs += @("-measure", "-csv")
 
     Write-Host "Running measured stress client for $DurationMinutes minutes..."
     Write-Host "Addr=$Addr | ClientID=$ClientID | Flush=$Flush | Offset=$Offset"
     Write-Host "CSV output: $csvPath"
 
-    & go run @args 1> $csvPath
+    & go run @clientArgs 1> $csvPath
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
@@ -47,5 +51,5 @@ if (-not $NoMeasure) {
 Write-Host "Running stress client (measurement disabled) for $DurationMinutes minutes..."
 Write-Host "Addr=$Addr | ClientID=$ClientID | Flush=$Flush | Offset=$Offset"
 
-& go run @args
+& go run @clientArgs
 exit $LASTEXITCODE

@@ -29,20 +29,10 @@ const (
 // StorageServiceClient is the client API for StorageService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-//
-// ==========================
-//
-//	gRPC Storage Service
-//
-// ==========================
 type StorageServiceClient interface {
-	// Lider mesajı gönderir, üye diske kaydeder
 	Store(ctx context.Context, in *StoredMessage, opts ...grpc.CallOption) (*StoreResult, error)
-	// Lider belirli bir ID'yi ister, üye mesajı döner
-	Retrieve(ctx context.Context, in *MessageID, opts ...grpc.CallOption) (*StoredMessage, error)	
-	// Üye lider'e kendini kaydeder
+	Retrieve(ctx context.Context, in *MessageID, opts ...grpc.CallOption) (*StoredMessage, error)
 	RegisterMember(ctx context.Context, in *MemberInfo, opts ...grpc.CallOption) (*RegisterReply, error)
-	// Üye hayatta olduğunu bildirir
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
@@ -97,20 +87,10 @@ func (c *storageServiceClient) Heartbeat(ctx context.Context, in *HeartbeatReque
 // StorageServiceServer is the server API for StorageService service.
 // All implementations must embed UnimplementedStorageServiceServer
 // for forward compatibility.
-//
-// ==========================
-//
-//	gRPC Storage Service
-//
-// ==========================
 type StorageServiceServer interface {
-	// Lider mesajı gönderir, üye diske kaydeder
 	Store(context.Context, *StoredMessage) (*StoreResult, error)
-	// Lider belirli bir ID'yi ister, üye mesajı döner
 	Retrieve(context.Context, *MessageID) (*StoredMessage, error)
-	// Üye lider'e kendini kaydeder
 	RegisterMember(context.Context, *MemberInfo) (*RegisterReply, error)
-	// Üye hayatta olduğunu bildirir
 	Heartbeat(context.Context, *HeartbeatRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedStorageServiceServer()
 }

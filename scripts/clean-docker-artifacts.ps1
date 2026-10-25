@@ -8,8 +8,7 @@
     - project containers
     - project volumes
     - project networks
-    - project images
-    - build cache
+    - project images built by Compose
 
     This script never runs a global system prune.
 
@@ -68,41 +67,5 @@ foreach ($composeFile in $composeFiles) {
         ) -IgnoreFailure
     }
 }
-
-# Leftover containers from this repo's compose project.
-$containerIds = @(
-    docker ps -a --filter "name=deploy-" --format "{{.ID}}" 2>$null |
-        Where-Object { $_ -and $_.Trim() -ne "" }
-)
-if ($containerIds.Count -gt 0) {
-    Invoke-External -FilePath "docker" -Arguments (@("rm", "-f") + $containerIds) -IgnoreFailure
-}
-
-$volumeNames = @(
-    docker volume ls --format "{{.Name}}" 2>$null |
-        Where-Object { $_ -match "^deploy_" -or $_ -match "tolerex" }
-)
-if ($volumeNames.Count -gt 0) {
-    Invoke-External -FilePath "docker" -Arguments (@("volume", "rm", "-f") + $volumeNames) -IgnoreFailure
-}
-
-$networkNames = @(
-    docker network ls --format "{{.Name}}" 2>$null |
-        Where-Object { $_ -match "^deploy_" -or $_ -match "tolerex" }
-)
-if ($networkNames.Count -gt 0) {
-    Invoke-External -FilePath "docker" -Arguments (@("network", "rm") + $networkNames) -IgnoreFailure
-}
-
-$imageRefs = @(
-    docker images --format "{{.Repository}}:{{.Tag}}" 2>$null |
-        Where-Object { $_ -like "tolerex-node:*" -or $_ -like "tolerex/*" } |
-        Sort-Object -Unique
-)
-if ($imageRefs.Count -gt 0) {
-    Invoke-External -FilePath "docker" -Arguments (@("rmi", "-f") + $imageRefs) -IgnoreFailure
-}
-
-Invoke-External -FilePath "docker" -Arguments @("builder", "prune", "-f") -IgnoreFailure
 
 Write-Host "clean-docker-artifacts complete"

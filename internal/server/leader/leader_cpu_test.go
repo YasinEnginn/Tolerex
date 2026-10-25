@@ -2,6 +2,7 @@ package leader
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
@@ -18,16 +19,10 @@ func TestLeader_CPUProfile(t *testing.T) {
 		t.Skip("set TOLEREX_RUN_PROFILE_TEST=1 to run CPU profiling test")
 	}
 
-	// ------------------------------------------------------------
-	// TEST MODE
-	// ------------------------------------------------------------
 	tmp := t.TempDir()
 	t.Setenv("TOLEREX_TEST_MODE", "1")
 	t.Setenv("TOLEREX_TEST_DIR", tmp)
 
-	// ------------------------------------------------------------
-	// TOLERANCE CONFIG
-	// ------------------------------------------------------------
 	conf := filepath.Join(tmp, "tolerance.conf")
 	if err := os.WriteFile(conf, []byte("TOLERANCE=1\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -38,9 +33,6 @@ func TestLeader_CPUProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// ------------------------------------------------------------
-	// CLUSTER STATE
-	// ------------------------------------------------------------
 	leader.Members = []string{"m1", "m2", "m3"}
 	leader.MemberLog = map[string]*shared.MemberInfo{
 		"m1": {Address: "m1", Alive: true},
@@ -48,23 +40,14 @@ func TestLeader_CPUProfile(t *testing.T) {
 		"m3": {Address: "m3", Alive: true},
 	}
 
-	// ------------------------------------------------------------
-	// MOCK: REPLICATION (NO saveState)
-	// ------------------------------------------------------------
 	leader.replicateFn = func(ctx context.Context, addr string, msg *pb.StoredMessage) bool {
 		return false
 	}
 
-	// ------------------------------------------------------------
-	// MOCK: DIAL MEMBER (CRITICAL FIX)
-	// ------------------------------------------------------------
 	leader.dialFn = func(addr string) (*grpc.ClientConn, error) {
-		return nil, grpc.ErrClientConnClosing
+		return nil, errors.New("connection closed")
 	}
 
-	// ------------------------------------------------------------
-	// CPU PROFILE
-	// ------------------------------------------------------------
 	prof := filepath.Join(tmp, "leader_cpu.prof")
 	f, err := os.Create(prof)
 	if err != nil {
@@ -76,9 +59,6 @@ func TestLeader_CPUProfile(t *testing.T) {
 
 	defer pprof.StopCPUProfile()
 
-	// ------------------------------------------------------------
-	// HOT PATH
-	// ------------------------------------------------------------
 	ctx := context.Background()
 
 	for i := 0; i < 30_000; i++ {

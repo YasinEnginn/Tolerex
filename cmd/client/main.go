@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,191 +10,152 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	DEFAULT_ADDR     = "127.0.0.1:6666"
-	DIAL_TIMEOUT     = 3 * time.Second
-	RETRY_DELAY      = 2 * time.Second
-	BULK_FLUSH_EVERY = 1000
-
-	// Leader prompt (server prints this WITHOUT newline)
-	SERVER_PROMPT = "tolerex> "
+	defaultAddress    = "127.0.0.1:6666"
+	dialTimeout       = 3 * time.Second
+	retryDelay        = 2 * time.Second
+	defaultBatchSize  = 1000
+	serverReadyLine   = "Tolerex ready"
+	interactivePrompt = "tolerex> "
+	maxResponseBytes  = (4 << 20) + 1024
 )
-
-var bannerLines = map[string]struct{}{
-	"--------------------------------------------------": {},
-	"TOLEREX - Leader Node (Control Plane)":              {},
-	"Basic Commands:":                                    {},
-	"Utility:":                                           {},
-	"Examples:":                                          {},
-	"SET <id> <message>        Store a message":          {},
-	"<N> SET <message>         Bulk store N messages":    {},
-	"GET <id>                  Retrieve a message":       {},
-	"HELP                      Show this help":           {},
-	"QUIT | EXIT               Disconnect client":        {},
-	"SET 10 HELLO":                                       {},
-	"1000 SET HELLO":                                     {},
-}
 
 var (
-	addrStr    = flag.String("addr", DEFAULT_ADDR, "Leader TCP address or comma-separated cluster addresses (e.g., 127.0.0.1:6666,127.0.0.1:6667)")
-	measure    = flag.Bool("measure", false, "Measure RTT per command using a separate TCP connection")
-	csv        = flag.Bool("csv", false, "Output measurements as CSV to stdout (Timestamp,ClientID,Operation,Count,Bytes,RTT_us,Mode,Status,PayloadSize). All logs/UI go to stderr.")
-	flushEvery = flag.Int("flush", BULK_FLUSH_EVERY, "Flush buffer after every N operations (default 1000). Set to 1 for unbuffered.")
-	offset     = flag.Int("offset", 0, "Starting ID offset for BULK operations (default 0)")
-	clientID   = flag.String("id", "client", "Client Identifier for CSV output (default 'client')")
-	stressMins = flag.Int("stress", 0, "Run stress test for N minutes. If 0, runs interactive/stdin mode.")
+	addrFlag       = flag.String("addr", defaultAddress, "Leader address or comma-separated addresses")
+	measureFlag    = flag.Bool("measure", false, "Measure round-trip time for each command")
+	csvFlag        = flag.Bool("csv", false, "Write measurements as CSV to stdout; requires -measure")
+	batchFlag      = flag.Int("flush", defaultBatchSize, "Bulk batch size; measurement mode always uses 1")
+	offsetFlag     = flag.Int("offset", 0, "Starting ID offset for generated bulk commands")
+	clientIDFlag   = flag.String("id", "client", "Client identifier in CSV output")
+	stressMinsFlag = flag.Int("stress", 0, "Stress duration in minutes")
+	durationFlag   = flag.Duration("duration", 0, "Stress duration such as 30s or 5m; overrides -stress")
 )
 
-func rotateAddresses(addrs []string) []string {
-	if len(addrs) <= 1 {
-		return addrs
-	}
-	res := make([]string, len(addrs))
-	copy(res, addrs)
-	rand.Shuffle(len(res), func(i, j int) {
-		res[i], res[j] = res[j], res[i]
-	})
-	return res
+type session struct {
+	conn   net.Conn
+	reader *bufio.Reader
+	writer *bufio.Writer
 }
 
-func connectLoop(addresses []string) net.Conn {
+func parseAddresses(value string) []string {
+	var addresses []string
+	for _, address := range strings.Split(value, ",") {
+		if address = strings.TrimSpace(address); address != "" {
+			addresses = append(addresses, address)
+		}
+	}
+	return addresses
+}
+
+func openSession(addresses []string) *session {
 	for {
-		currentAddrs := rotateAddresses(addresses)
-		for _, a := range currentAddrs {
-			dialer := net.Dialer{Timeout: DIAL_TIMEOUT}
-			conn, err := dialer.Dial("tcp", a)
-			if err == nil {
-				if tcp, ok := conn.(*net.TCPConn); ok {
-					_ = tcp.SetNoDelay(true)
-				}
-				fmt.Fprintf(os.Stderr, "Connected to %s\n", a)
-				return conn
+		current := append([]string(nil), addresses...)
+		rand.Shuffle(len(current), func(i, j int) { current[i], current[j] = current[j], current[i] })
+		for _, address := range current {
+			conn, err := (&net.Dialer{Timeout: dialTimeout}).Dial("tcp", address)
+			if err != nil {
+				continue
 			}
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetNoDelay(true)
+			}
+			client := &session{
+				conn:   conn,
+				reader: bufio.NewReaderSize(conn, 64*1024),
+				writer: bufio.NewWriterSize(conn, 64*1024),
+			}
+			if err := client.readReady(5 * time.Second); err == nil {
+				fmt.Fprintf(os.Stderr, "Connected to %s\n", address)
+				return client
+			}
+			_ = conn.Close()
 		}
-		fmt.Fprintf(os.Stderr, "Cluster unreachable, retrying in %v...\n", RETRY_DELAY)
-		time.Sleep(RETRY_DELAY)
+		fmt.Fprintf(os.Stderr, "Cluster unreachable; retrying in %v\n", retryDelay)
+		time.Sleep(retryDelay)
 	}
 }
 
-func drainMeasureStartup(mconn net.Conn, r *bufio.Reader, maxDur time.Duration) error {
-	deadline := time.Now().Add(maxDur)
-	_ = mconn.SetReadDeadline(deadline)
-	defer mconn.SetReadDeadline(time.Time{})
+func (s *session) readReady(timeout time.Duration) error {
+	_ = s.conn.SetReadDeadline(time.Now().Add(timeout))
+	defer s.conn.SetReadDeadline(time.Time{})
+	line, err := s.reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(line) != serverReadyLine {
+		return fmt.Errorf("unexpected server greeting %q", strings.TrimSpace(line))
+	}
+	return nil
+}
 
-	p := []byte(SERVER_PROMPT)
-	window := make([]byte, 0, len(p))
+func (s *session) write(command string) error {
+	if _, err := s.writer.WriteString(command + "\r\n"); err != nil {
+		return err
+	}
+	return nil
+}
 
+func (s *session) flush() error {
+	return s.writer.Flush()
+}
+
+func (s *session) readResponse(timeout time.Duration) (string, error) {
+	_ = s.conn.SetReadDeadline(time.Now().Add(timeout))
+	defer s.conn.SetReadDeadline(time.Time{})
+
+	var response strings.Builder
 	for {
-		b, err := r.ReadByte()
-		if err != nil {
-			return fmt.Errorf("startup sync failed (waiting for prompt): %w", err)
+		fragment, err := s.reader.ReadSlice('\n')
+		if response.Len()+len(fragment) > maxResponseBytes {
+			return "", errors.New("response exceeds 4 MiB limit")
 		}
-
-		if len(window) < len(p) {
-			window = append(window, b)
-		} else {
-			copy(window, window[1:])
-			window[len(p)-1] = b
+		_, _ = response.Write(fragment)
+		if err == nil {
+			line := strings.TrimSuffix(response.String(), "\n")
+			return strings.TrimSuffix(line, "\r"), nil
 		}
-
-		if len(window) == len(p) && bytes.Equal(window, p) {
-			return nil
-		}
-	}
-}
-
-func setupMeasureChannel(addrs []string) (net.Conn, *bufio.Reader, *bufio.Writer, error) {
-	const maxAttempts = 2
-
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		mconn := connectLoop(addrs)
-		mreader := bufio.NewReader(mconn)
-		mwriter := bufio.NewWriterSize(mconn, 64*1024)
-
-		timeout := 5 * time.Second
-		if attempt == maxAttempts {
-			timeout = 15 * time.Second
-		}
-
-		if err := drainMeasureStartup(mconn, mreader, timeout); err == nil {
-			return mconn, mreader, mwriter, nil
-		} else {
-			fmt.Fprintf(
-				os.Stderr,
-				"Measure channel sync failed (attempt %d/%d): %v\n",
-				attempt,
-				maxAttempts,
-				err,
-			)
-		}
-
-		_ = mconn.Close()
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	return nil, nil, nil, fmt.Errorf("startup sync failed after retries")
-}
-
-func consumePrompt(mconn net.Conn, r *bufio.Reader) {
-	// Optimization: Reduce deadline calls if possible, use faster peek
-	_ = mconn.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
-	defer mconn.SetReadDeadline(time.Time{})
-
-	for i := 0; i < 5; i++ {
-		b, err := r.Peek(len(SERVER_PROMPT))
-		if err == nil && string(b) == SERVER_PROMPT {
-			_, _ = r.Discard(len(SERVER_PROMPT))
-			return
-		}
-		one, err2 := r.Peek(1)
-		if err2 == nil && (one[0] == '\r' || one[0] == '\n' || one[0] == ' ') {
-			_, _ = r.Discard(1)
-			continue
-		}
-		return
-	}
-}
-
-func isControlBannerLine(line string) bool {
-	if strings.Contains(line, "TOLEREX - Leader Node") {
-		return true
-	}
-	_, ok := bannerLines[line]
-	return ok
-}
-
-func readSemanticLine(mconn net.Conn, r *bufio.Reader, timeout time.Duration) (string, error) {
-	_ = mconn.SetReadDeadline(time.Now().Add(timeout))
-	defer mconn.SetReadDeadline(time.Time{})
-
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
+		if !errors.Is(err, bufio.ErrBufferFull) {
 			return "", err
 		}
-
-		// Optimization: Avoid heavy TrimSpace if not needed
-		t := strings.TrimSpace(line)
-		if len(t) == 0 {
-			continue
-		}
-
-		// Fast path for common responses
-		if t == "OK" || t == "NOT_FOUND" || t == "Bye" {
-			return t, nil
-		}
-
-		// Skip only exact banner/help lines, never data payloads.
-		if isControlBannerLine(t) {
-			continue
-		}
-		return t, nil
 	}
+}
+
+func (s *session) execute(command string, timeout time.Duration) (string, time.Duration, error) {
+	start := time.Now()
+	if err := s.write(command); err != nil {
+		return "", time.Since(start), err
+	}
+	if err := s.flush(); err != nil {
+		return "", time.Since(start), err
+	}
+	response, err := s.readResponse(timeout)
+	return response, time.Since(start), err
+}
+
+func responseStatus(response string, err error) string {
+	if err != nil || strings.HasPrefix(response, "ERROR:") {
+		return "ERROR"
+	}
+	if response == "NOT_FOUND" {
+		return "NOT_FOUND"
+	}
+	return "OK"
+}
+
+func displayResponse(response string) string {
+	if value, ok := strings.CutPrefix(response, "VALUE "); ok {
+		return value
+	}
+	if help, ok := strings.CutPrefix(response, "HELP "); ok {
+		return help
+	}
+	return response
 }
 
 func listTxtFiles(dir string) ([]string, error) {
@@ -203,40 +164,40 @@ func listTxtFiles(dir string) ([]string, error) {
 		return nil, err
 	}
 	var files []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".txt") {
-			files = append(files, e.Name())
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.EqualFold(filepath.Ext(entry.Name()), ".txt") {
+			files = append(files, entry.Name())
 		}
 	}
+	sort.Strings(files)
 	return files, nil
 }
 
-func selectRandomTestFile() (string, error) {
-	const baseDir = "test_data"
-	files, err := listTxtFiles(baseDir)
-	if err != nil || len(files) == 0 {
-		return "", fmt.Errorf("no txt files found in %s", baseDir)
-	}
-	return filepath.Join(baseDir, files[rand.Intn(len(files))]), nil
+func selectTestFileInteractive(stdin *bufio.Scanner) (string, error) {
+	return selectTestFileInteractiveFrom("test_data", stdin)
 }
 
-func selectTestFileInteractive() (string, error) {
-	const baseDir = "test_data"
-	files, err := listTxtFiles(baseDir)
+func selectTestFileInteractiveFrom(dir string, stdin *bufio.Scanner) (string, error) {
+	files, err := listTxtFiles(dir)
 	if err != nil || len(files) == 0 {
-		return "", fmt.Errorf("no txt files found in %s", baseDir)
+		return "", fmt.Errorf("no .txt files found in %s", dir)
 	}
-	fmt.Fprintf(os.Stderr, "\nAvailable files:\n")
-	for i, f := range files {
-		fmt.Fprintf(os.Stderr, "  %d) %s\n", i+1, f)
+	fmt.Fprintln(os.Stderr, "Available files:")
+	for index, name := range files {
+		fmt.Fprintf(os.Stderr, "  %d) %s\n", index+1, name)
 	}
-	var fileChoice int
 	fmt.Fprint(os.Stderr, "Select file: ")
-	fmt.Scanln(&fileChoice)
-	if fileChoice < 1 || fileChoice > len(files) {
-		return "", fmt.Errorf("invalid file choice")
+	if !stdin.Scan() {
+		if err := stdin.Err(); err != nil {
+			return "", err
+		}
+		return "", io.EOF
 	}
-	return filepath.Join(baseDir, files[fileChoice-1]), nil
+	choice, err := strconv.Atoi(strings.TrimSpace(stdin.Text()))
+	if err != nil || choice < 1 || choice > len(files) {
+		return "", errors.New("invalid file choice")
+	}
+	return filepath.Join(dir, files[choice-1]), nil
 }
 
 func readWholeFile(path string) (string, error) {
@@ -244,11 +205,25 @@ func readWholeFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	content := string(data)
-	content = strings.ReplaceAll(content, "\r\n", " ")
-	content = strings.ReplaceAll(content, "\n", " ")
-	content = strings.Join(strings.Fields(content), " ")
+	content := strings.TrimSpace(string(data))
+	content = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ").Replace(content)
 	return content, nil
+}
+
+func loadTestPayloads(dir string) ([]string, error) {
+	files, err := listTxtFiles(dir)
+	if err != nil || len(files) == 0 {
+		return nil, fmt.Errorf("no .txt files found in %s", dir)
+	}
+	payloads := make([]string, 0, len(files))
+	for _, name := range files {
+		content, readErr := readWholeFile(filepath.Join(dir, name))
+		if readErr != nil {
+			return nil, readErr
+		}
+		payloads = append(payloads, content)
+	}
+	return payloads, nil
 }
 
 type rttStats struct {
@@ -261,7 +236,7 @@ type rttStats struct {
 func (s *rttStats) add(rtt time.Duration) {
 	s.count++
 	s.sum += rtt
-	if rtt < s.min || s.min == 0 {
+	if s.min == 0 || rtt < s.min {
 		s.min = rtt
 	}
 	if rtt > s.max {
@@ -269,88 +244,203 @@ func (s *rttStats) add(rtt time.Duration) {
 	}
 }
 
-func emitStat(csvEnabled bool, csvOut *bufio.Writer, op string, count int, bytesSent int64, rtt time.Duration, status string, payloadSize int) {
-	mode := "buffered"
-	if *flushEvery == 1 {
-		mode = "unbuffered"
+func emitStat(csvOut *bufio.Writer, operation string, count int, bytesSent int64, rtt time.Duration, status string, payloadSize int) {
+	mode := "batched"
+	if *batchFlag == 1 || *measureFlag {
+		mode = "immediate"
 	}
-	if csvEnabled && csvOut != nil {
-		ts := time.Now().Format(time.RFC3339Nano)
-		fmt.Fprintf(csvOut, "%s,%s,%s,%d,%d,%d,%s,%s,%d\n", ts, *clientID, op, count, bytesSent, rtt.Microseconds(), mode, status, payloadSize)
+	if *csvFlag {
+		fmt.Fprintf(csvOut, "%s,%s,%s,%d,%d,%d,%s,%s,%d\n",
+			time.Now().Format(time.RFC3339Nano), *clientIDFlag, operation, count,
+			bytesSent, rtt.Microseconds(), mode, status, payloadSize)
 		_ = csvOut.Flush()
 		return
 	}
-	fmt.Fprintf(os.Stderr, "RTT (%s): %d us | count=%d | bytes=%d | mode=%s | status=%s\n", op, rtt.Microseconds(), count, bytesSent, mode, status)
+	fmt.Fprintf(os.Stderr, "RTT %s: %v | count=%d | bytes=%d | status=%s\n", operation, rtt, count, bytesSent, status)
+}
+
+func runBulk(client *session, count int, operation string, payloadSize int, build func(int) string, csvOut *bufio.Writer, stats *rttStats, report bool) error {
+	if count <= 0 {
+		return errors.New("bulk count must be greater than 0")
+	}
+	batchSize := *batchFlag
+	if *measureFlag {
+		batchSize = 1
+	}
+	var totalBytes int64
+	var totalRTT time.Duration
+	overallStatus := "OK"
+
+	for start := 0; start < count; start += batchSize {
+		end := min(start+batchSize, count)
+		written := 0
+		var started time.Time
+		for index := start; index < end; index++ {
+			command := build(index)
+			if *measureFlag {
+				started = time.Now()
+			}
+			totalBytes += int64(len(command) + 2)
+			if err := client.write(command); err != nil {
+				return err
+			}
+			written++
+		}
+		if err := client.flush(); err != nil {
+			return err
+		}
+		for index := 0; index < written; index++ {
+			response, readErr := client.readResponse(15 * time.Second)
+			var rtt time.Duration
+			if *measureFlag {
+				rtt = time.Since(started)
+			}
+			status := responseStatus(response, readErr)
+			if status != "OK" {
+				overallStatus = status
+			}
+			if *measureFlag {
+				totalRTT += rtt
+				stats.add(rtt)
+			}
+			if readErr != nil {
+				return readErr
+			}
+		}
+	}
+
+	if *measureFlag {
+		emitStat(csvOut, operation, count, totalBytes, totalRTT/time.Duration(count), overallStatus, payloadSize)
+	} else if report {
+		fmt.Fprintf(os.Stderr, "%s completed: %d operations | status=%s\n", operation, count, overallStatus)
+	}
+	return nil
+}
+
+func runFile(client *session, path string, csvOut *bufio.Writer, stats *rttStats) {
+	content, err := readWholeFile(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ERROR:", err)
+		return
+	}
+	id := *offsetFlag + rand.Intn(1_000_000)
+	command := fmt.Sprintf("SET %d %s", id, content)
+	response, rtt, err := client.execute(command, 15*time.Second)
+	status := responseStatus(response, err)
+	if *measureFlag {
+		stats.add(rtt)
+		emitStat(csvOut, "FILE_SET", 1, int64(len(command)+2), rtt, status, len(content))
+	} else {
+		fmt.Fprintln(os.Stdout, displayResponse(response))
+	}
+}
+
+func runStress(client *session, duration time.Duration, csvOut *bufio.Writer, stats *rttStats) error {
+	deadline := time.Now().Add(duration)
+	payloads, payloadErr := loadTestPayloads("test_data")
+	if payloadErr != nil {
+		fmt.Fprintln(os.Stderr, "File payloads disabled:", payloadErr)
+	}
+	fmt.Fprintf(os.Stderr, "Stress test running for %s\n", duration)
+	for time.Now().Before(deadline) {
+		operationCount := 5
+		if len(payloads) == 0 {
+			operationCount = 3
+		}
+		switch rand.Intn(operationCount) {
+		case 0:
+			id := *offsetFlag + rand.Intn(1_000_000)
+			if err := sendStress(client, fmt.Sprintf("SET %d stress_%d", id, id), "SET", csvOut, stats); err != nil {
+				return err
+			}
+		case 1:
+			id := *offsetFlag + rand.Intn(1_000_000)
+			if err := sendStress(client, fmt.Sprintf("GET %d", id), "GET", csvOut, stats); err != nil {
+				return err
+			}
+		case 2:
+			base := *offsetFlag + rand.Intn(1_000_000)
+			if err := runBulk(client, 10+rand.Intn(90), "BULK_SET", 11, func(index int) string {
+				id := base + index
+				return fmt.Sprintf("SET %d stress_bulk_%d", id, id)
+			}, csvOut, stats, false); err != nil {
+				return err
+			}
+		case 3:
+			content := payloads[rand.Intn(len(payloads))]
+			id := *offsetFlag + rand.Intn(1_000_000)
+			if err := sendStress(client, fmt.Sprintf("SET %d %s", id, content), "FILE_SET", csvOut, stats); err != nil {
+				return err
+			}
+		case 4:
+			content := payloads[rand.Intn(len(payloads))]
+			base := *offsetFlag + rand.Intn(1_000_000)
+			if err := runBulk(client, 5+rand.Intn(20), "BULK_FILE", len(content), func(index int) string {
+				return fmt.Sprintf("SET %d %s", base+index, content)
+			}, csvOut, stats, false); err != nil {
+				return err
+			}
+		}
+	}
+	fmt.Fprintln(os.Stderr, "Stress test completed")
+	return nil
+}
+
+func sendStress(client *session, command, operation string, csvOut *bufio.Writer, stats *rttStats) error {
+	response, rtt, err := client.execute(command, 15*time.Second)
+	if *measureFlag {
+		stats.add(rtt)
+		emitStat(csvOut, operation, 1, int64(len(command)+2), rtt, responseStatus(response, err), 0)
+	}
+	return err
 }
 
 func main() {
 	flag.Parse()
-	rand.Seed(time.Now().UnixNano())
-
-	addrs := strings.Split(*addrStr, ",")
-	for i := range addrs {
-		addrs[i] = strings.TrimSpace(addrs[i])
+	addresses := parseAddresses(*addrFlag)
+	if len(addresses) == 0 || *batchFlag < 1 || *stressMinsFlag < 0 || *durationFlag < 0 {
+		fmt.Fprintln(os.Stderr, "ERROR: provide an address, -flush >= 1, and a non-negative stress duration")
+		os.Exit(2)
 	}
-
-	if *csv && !*measure {
-		fmt.Fprintln(os.Stderr, "ERROR: -csv requires -measure. Run with: -measure -csv")
+	if *csvFlag && !*measureFlag {
+		fmt.Fprintln(os.Stderr, "ERROR: -csv requires -measure")
 		os.Exit(2)
 	}
 
 	var csvOut *bufio.Writer
-	if *csv {
+	if *csvFlag {
 		csvOut = bufio.NewWriterSize(os.Stdout, 64*1024)
 		fmt.Fprintln(csvOut, "Timestamp,ClientID,Operation,Count,Bytes,RTT_us,Mode,Status,PayloadSize")
 		_ = csvOut.Flush()
 	}
 
-	cliConn := connectLoop(addrs)
-	defer cliConn.Close()
+	client := openSession(addresses)
+	defer client.conn.Close()
+	stats := &rttStats{}
 
-	var cliOut io.Writer = os.Stdout
-	if *stressMins > 0 {
-		// In stress mode, discarding control-plane responses avoids
-		// background-job output buffering stalls.
-		cliOut = io.Discard
-	} else if *csv {
-		cliOut = os.Stderr
+	stressDuration := *durationFlag
+	if stressDuration == 0 && *stressMinsFlag > 0 {
+		stressDuration = time.Duration(*stressMinsFlag) * time.Minute
 	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _ = io.Copy(cliOut, cliConn)
-	}()
-
-	cliWriter := bufio.NewWriterSize(cliConn, 64*1024)
-
-	var (
-		mconn   net.Conn
-		mreader *bufio.Reader
-		mwriter *bufio.Writer
-	)
-	stats := rttStats{}
-
-	if *measure {
-		var err error
-		mconn, mreader, mwriter, err = setupMeasureChannel(addrs)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+	if stressDuration > 0 {
+		if err := runStress(client, stressDuration, csvOut, stats); err != nil {
+			fmt.Fprintln(os.Stderr, "ERROR: stress test stopped:", err)
 			os.Exit(1)
 		}
-		defer mconn.Close()
-	}
-
-	if *stressMins > 0 {
-		runStressTest(addrs, cliWriter, mconn, mreader, mwriter, csvOut, &stats)
+		if stats.count > 0 {
+			fmt.Fprintf(os.Stderr, "RTT summary: samples=%d avg=%v min=%v max=%v\n", stats.count, stats.sum/time.Duration(stats.count), stats.min, stats.max)
+		}
 		return
 	}
 
 	stdin := bufio.NewScanner(os.Stdin)
 	stdin.Buffer(make([]byte, 1024), 10*1024*1024)
-
+	stdinInfo, _ := os.Stdin.Stat()
+	showPrompt := stdinInfo != nil && stdinInfo.Mode()&os.ModeCharDevice != 0
 	for {
-		fmt.Fprint(os.Stderr, SERVER_PROMPT)
+		if showPrompt {
+			fmt.Fprint(os.Stderr, interactivePrompt)
+		}
 		if !stdin.Scan() {
 			break
 		}
@@ -359,224 +449,68 @@ func main() {
 			continue
 		}
 
-		if strings.EqualFold(line, "EXIT") || strings.EqualFold(line, "QUIT") {
-			_, _ = cliWriter.WriteString("QUIT\r\n")
-			_ = cliWriter.Flush()
-			if *measure && mwriter != nil {
-				_, _ = mwriter.WriteString("QUIT\r\n")
-				_ = mwriter.Flush()
+		if strings.EqualFold(line, "FILE") || strings.HasSuffix(strings.ToUpper(line), " FILE") {
+			path, err := selectTestFileInteractive(stdin)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "ERROR:", err)
+				continue
 			}
-			break
+			fields := strings.Fields(line)
+			if len(fields) == 2 {
+				count, err := strconv.Atoi(fields[0])
+				if err == nil {
+					content, readErr := readWholeFile(path)
+					if readErr != nil {
+						fmt.Fprintln(os.Stderr, "ERROR:", readErr)
+						continue
+					}
+					base := *offsetFlag + rand.Intn(1_000_000)
+					if err := runBulk(client, count, "BULK_FILE", len(content), func(index int) string {
+						return fmt.Sprintf("SET %d %s", base+index, content)
+					}, csvOut, stats, true); err != nil {
+						fmt.Fprintln(os.Stderr, "ERROR:", err)
+					}
+					continue
+				}
+			}
+			runFile(client, path, csvOut, stats)
+			continue
 		}
 
 		fields := strings.Fields(line)
-		if len(fields) == 2 && strings.EqualFold(fields[1], "FILE") {
-			if bulkCount, err := strconv.Atoi(fields[0]); err == nil {
-				path, _ := selectTestFileInteractive()
-				if path != "" {
-					handleBulkFile(bulkCount, path, cliWriter, mconn, mreader, mwriter, csvOut, &stats)
+		if len(fields) >= 3 && strings.EqualFold(fields[1], "SET") {
+			if count, err := strconv.Atoi(fields[0]); err == nil {
+				message := strings.Join(fields[2:], " ")
+				base := *offsetFlag + rand.Intn(1_000_000)
+				if err := runBulk(client, count, "BULK_SET", len(message), func(index int) string {
+					id := base + index
+					return fmt.Sprintf("SET %d %s_%d", id, message, id)
+				}, csvOut, stats, true); err != nil {
+					fmt.Fprintln(os.Stderr, "ERROR:", err)
 				}
 				continue
 			}
 		}
 
-		if strings.EqualFold(line, "FILE") {
-			path, _ := selectTestFileInteractive()
-			if path != "" {
-				handleSingleFile(path, cliWriter, mconn, mreader, mwriter, csvOut, &stats)
-			}
-			continue
-		}
-
-		if len(fields) >= 3 && strings.EqualFold(fields[1], "SET") {
-			if bulkCount, err := strconv.Atoi(fields[0]); err == nil {
-				handleBulkSet(bulkCount, strings.Join(fields[2:], " "), cliWriter, mconn, mreader, mwriter, csvOut, &stats)
-				continue
-			}
-		}
-
-		// Normal operation
-		_, _ = cliWriter.WriteString(line + "\r\n")
-		_ = cliWriter.Flush()
-
-		if *measure && mwriter != nil {
-			start := time.Now()
-			_, _ = mwriter.WriteString(line + "\r\n")
-			_ = mwriter.Flush()
-			_, err := readSemanticLine(mconn, mreader, 5*time.Second)
-			rtt := time.Since(start)
-			consumePrompt(mconn, mreader)
-			status := "OK"
-			if err != nil {
-				status = "ERROR"
-			}
+		response, rtt, err := client.execute(line, 15*time.Second)
+		status := responseStatus(response, err)
+		if *measureFlag {
 			stats.add(rtt)
-			emitStat(*csv, csvOut, strings.ToUpper(fields[0]), 1, int64(len(line)+2), rtt, status, 0)
+			emitStat(csvOut, strings.ToUpper(fields[0]), 1, int64(len(line)+2), rtt, status, 0)
 		}
-	}
-
-	if *measure && stats.count > 0 {
-		fmt.Fprintf(os.Stderr, "\n=== RTT SUMMARY ===\nSamples: %d | Avg: %v | Min: %v | Max: %v\n",
-			stats.count, stats.sum/time.Duration(stats.count), stats.min, stats.max)
-	}
-	<-done
-}
-
-func handleSingleFile(path string, cliWriter *bufio.Writer, mconn net.Conn, mreader *bufio.Reader, mwriter *bufio.Writer, csvOut *bufio.Writer, stats *rttStats) {
-	content, _ := readWholeFile(path)
-	id := rand.Intn(1000000)
-	cmd := fmt.Sprintf("SET %d %s\r\n", id, content)
-	_, _ = cliWriter.WriteString(cmd)
-	_ = cliWriter.Flush()
-
-	if *measure && mwriter != nil {
-		start := time.Now()
-		_, _ = mwriter.WriteString(cmd)
-		_ = mwriter.Flush()
-		_, err := readSemanticLine(mconn, mreader, 10*time.Second)
-		rtt := time.Since(start)
-		consumePrompt(mconn, mreader)
-		status := "OK"
 		if err != nil {
-			status = "ERROR"
+			fmt.Fprintln(os.Stderr, "ERROR:", err)
+			break
 		}
-		stats.add(rtt)
-		emitStat(*csv, csvOut, "FILE_SET", 1, int64(len(cmd)), rtt, status, len(content))
-	}
-}
-
-func handleBulkFile(count int, path string, cliWriter *bufio.Writer, mconn net.Conn, mreader *bufio.Reader, mwriter *bufio.Writer, csvOut *bufio.Writer, stats *rttStats) {
-	content, _ := readWholeFile(path)
-	baseID := rand.Intn(1000000)
-	var totalBytes int64
-	var totalRTT time.Duration
-	var samples int
-
-	for i := 0; i < count; i++ {
-		cmd := fmt.Sprintf("SET %d %s\r\n", baseID+i, content)
-		totalBytes += int64(len(cmd))
-		_, _ = cliWriter.WriteString(cmd)
-		if (i+1)%*flushEvery == 0 {
-			_ = cliWriter.Flush()
+		if !*csvFlag {
+			fmt.Fprintln(os.Stdout, displayResponse(response))
 		}
-
-		if *measure && mwriter != nil && (i == 0 || i == count-1) {
-			start := time.Now()
-			_, _ = mwriter.WriteString(cmd)
-			_ = mwriter.Flush()
-			_, err := readSemanticLine(mconn, mreader, 10*time.Second)
-			if err == nil {
-				totalRTT += time.Since(start)
-				samples++
-			}
-			consumePrompt(mconn, mreader)
+		if strings.EqualFold(fields[0], "QUIT") || strings.EqualFold(fields[0], "EXIT") {
+			break
 		}
 	}
-	_ = cliWriter.Flush()
 
-	if samples > 0 {
-		avgRTT := totalRTT / time.Duration(samples)
-		stats.add(avgRTT)
-		emitStat(*csv, csvOut, "BULK_FILE", count, totalBytes, avgRTT, "OK", len(content))
-	}
-}
-
-func handleBulkSet(count int, msg string, cliWriter *bufio.Writer, mconn net.Conn, mreader *bufio.Reader, mwriter *bufio.Writer, csvOut *bufio.Writer, stats *rttStats) {
-	var totalBytes int64
-	var totalRTT time.Duration
-	var samples int
-	baseID := *offset + rand.Intn(1000000)
-
-	for i := 0; i < count; i++ {
-		cmd := fmt.Sprintf("SET %d %s_%d\r\n", baseID+i, msg, baseID+i)
-		totalBytes += int64(len(cmd))
-		_, _ = cliWriter.WriteString(cmd)
-		if (i+1)%*flushEvery == 0 {
-			_ = cliWriter.Flush()
-		}
-
-		if *measure && mwriter != nil && (i == 0 || i == count-1) {
-			start := time.Now()
-			_, _ = mwriter.WriteString(cmd)
-			_ = mwriter.Flush()
-			_, err := readSemanticLine(mconn, mreader, 10*time.Second)
-			if err == nil {
-				totalRTT += time.Since(start)
-				samples++
-			}
-			consumePrompt(mconn, mreader)
-		}
-	}
-	_ = cliWriter.Flush()
-
-	if samples > 0 {
-		avgRTT := totalRTT / time.Duration(samples)
-		stats.add(avgRTT)
-		emitStat(*csv, csvOut, "BULK_SET", count, totalBytes, avgRTT, "OK", len(msg))
-	}
-}
-
-func runStressTest(addrs []string, cliWriter *bufio.Writer, mconn net.Conn, mreader *bufio.Reader, mwriter *bufio.Writer, csvOut *bufio.Writer, stats *rttStats) {
-	endTime := time.Now().Add(time.Duration(*stressMins) * time.Minute)
-	fmt.Fprintf(os.Stderr, "Starting stress test for %d minutes...\n", *stressMins)
-
-	ops := []string{"SET", "GET", "FILE", "BULK_SET", "BULK_FILE"}
-
-	for time.Now().Before(endTime) {
-		op := ops[rand.Intn(len(ops))]
-		switch op {
-		case "SET":
-			id := rand.Intn(1000000)
-			val := fmt.Sprintf("stress_val_%d", rand.Intn(1000))
-			cmd := fmt.Sprintf("SET %d %s\r\n", id, val)
-			sendStressCmd(cmd, "SET", 1, len(val), cliWriter, mconn, mreader, mwriter, csvOut, stats)
-		case "GET":
-			id := rand.Intn(1000000)
-			cmd := fmt.Sprintf("GET %d\r\n", id)
-			sendStressCmd(cmd, "GET", 1, 0, cliWriter, mconn, mreader, mwriter, csvOut, stats)
-		case "FILE":
-			path, _ := selectRandomTestFile()
-			if path != "" {
-				content, _ := readWholeFile(path)
-				id := rand.Intn(1000000)
-				cmd := fmt.Sprintf("SET %d %s\r\n", id, content)
-				sendStressCmd(cmd, "STRESS_FILE", 1, len(content), cliWriter, mconn, mreader, mwriter, csvOut, stats)
-			}
-		case "BULK_SET":
-			count := 10 + rand.Intn(90)
-			handleBulkSet(count, "stress_bulk", cliWriter, mconn, mreader, mwriter, csvOut, stats)
-		case "BULK_FILE":
-			count := 5 + rand.Intn(20)
-			path, _ := selectRandomTestFile()
-			if path != "" {
-				handleBulkFile(count, path, cliWriter, mconn, mreader, mwriter, csvOut, stats)
-			}
-		}
-		// Removed artificial sleep for maximum throughput
-	}
-
-	fmt.Fprintln(os.Stderr, "Stress test completed.")
 	if stats.count > 0 {
-		fmt.Fprintf(os.Stderr, "Summary: %d ops | Avg RTT: %v\n", stats.count, stats.sum/time.Duration(stats.count))
-	}
-}
-
-func sendStressCmd(cmd, op string, count, payload int, cliWriter *bufio.Writer, mconn net.Conn, mreader *bufio.Reader, mwriter *bufio.Writer, csvOut *bufio.Writer, stats *rttStats) {
-	_, _ = cliWriter.WriteString(cmd)
-	_ = cliWriter.Flush()
-
-	if *measure && mwriter != nil {
-		start := time.Now()
-		_, _ = mwriter.WriteString(cmd)
-		_ = mwriter.Flush()
-		_, err := readSemanticLine(mconn, mreader, 5*time.Second)
-		rtt := time.Since(start)
-		consumePrompt(mconn, mreader)
-		status := "OK"
-		if err != nil {
-			status = "ERROR"
-		}
-		stats.add(rtt)
-		emitStat(*csv, csvOut, op, count, int64(len(cmd)), rtt, status, payload)
+		fmt.Fprintf(os.Stderr, "RTT summary: samples=%d avg=%v min=%v max=%v\n", stats.count, stats.sum/time.Duration(stats.count), stats.min, stats.max)
 	}
 }

@@ -1,21 +1,3 @@
-<#
-.SYNOPSIS
-    Runs Go tests and benchmarks for the Tolerex project.
-
-.DESCRIPTION
-    This script executes 'go test' for specific packages.
-    It supports flags for race detection (-Race) and benchmarking (-Bench).
-    It also handles setting up environment variables for optional profiling.
-
-.PARAMETER Race
-    Enables the Go race detector (-race). Slower, but essential for concurrent code.
-
-.PARAMETER Bench
-    Runs benchmarks (-bench) instead of standard tests.
-
-.PARAMETER Profile
-    Runs a special CPU profiling test case (TestLeader_CPUProfile).
-#>
 param(
     [switch]$Race,
     [switch]$Bench,
@@ -24,17 +6,25 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "==> Running targeted unit tests"
-go test ./internal/config ./internal/storage ./internal/server/balancer ./internal/server/leader
+function Invoke-Go {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    & go @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "go $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+    }
+}
+
+Write-Host "==> Running all unit tests"
+Invoke-Go @("test", "./...", "-count=1")
 
 if ($Race) {
-    Write-Host "==> Running race test (leader package)"
-    go test -race ./internal/server/leader
+    Write-Host "==> Running race detector for all packages"
+    Invoke-Go @("test", "-race", "./...", "-count=1")
 }
 
 if ($Bench) {
     Write-Host "==> Running storage + balancer benchmarks"
-    go test -run '^$' -bench 'Benchmark(WriteMessage_|LeastLoaded_|P2C_)' ./internal/storage ./internal/server/balancer -benchmem
+    Invoke-Go @("test", "-run", '^$', "-bench", 'Benchmark(WriteMessage_|LeastLoaded_|P2C_)', "./internal/storage", "./internal/server/balancer", "-benchmem")
 }
 
 if ($Profile) {
@@ -42,7 +32,7 @@ if ($Profile) {
     $old = $env:TOLEREX_RUN_PROFILE_TEST
     $env:TOLEREX_RUN_PROFILE_TEST = "1"
     try {
-        go test ./internal/server/leader -run TestLeader_CPUProfile -v
+        Invoke-Go @("test", "./internal/server/leader", "-run", "TestLeader_CPUProfile", "-v")
     }
     finally {
         if ($null -eq $old) {

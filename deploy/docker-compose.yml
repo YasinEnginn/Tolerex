@@ -1,6 +1,8 @@
+name: tolerex-monitoring
+
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.15.1
     restart: unless-stopped
     volumes:
       - ./prometheus.local.yml:/etc/prometheus/prometheus.yml:ro
@@ -14,11 +16,11 @@ services:
       - "host.docker.internal:host-gateway"
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.2.4
     restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
       - GF_USERS_DEFAULT_THEME=dark
       - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_DASHBOARDS_MIN_REFRESH_INTERVAL=1s

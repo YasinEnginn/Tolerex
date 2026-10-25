@@ -4,7 +4,10 @@
 
 1. Leader election and high availability
 2. Write-ahead log and crash replay
-3. Automatic data rebalancing
+3. Automatic replica repair and rebalancing
+4. Rollback or repair of partial replica writes
+5. Authenticated client protocol
+6. Rootless containers with secure Compose secret ownership
 
 ## Medium Priority
 

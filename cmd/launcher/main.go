@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,32 +15,28 @@ import (
 	"tolerex/internal/storage"
 )
 
-// ===================================================================================
-// INPUT HELPERS
-// ===================================================================================
+var inputReader = bufio.NewReader(os.Stdin)
 
-func askInt(prompt string, min int) int {
-	reader := bufio.NewReader(os.Stdin)
+func askInt(prompt string, min, defaultValue int) int {
 	for {
 		fmt.Print(prompt)
-		text, _ := reader.ReadString('\n')
+		text, _ := inputReader.ReadString('\n')
 		text = strings.TrimSpace(text)
 		if text == "" {
-			return min
+			return defaultValue
 		}
 		value, err := strconv.Atoi(text)
 		if err == nil && value >= min {
 			return value
 		}
-		fmt.Printf("Invalid input. Please enter a number >= %d (or leave empty for default %d).\n", min, min)
+		fmt.Printf("Invalid input. Please enter a number >= %d (or leave empty for default %d).\n", min, defaultValue)
 	}
 }
 
 func askChoice(prompt string, allowed ...string) string {
-	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print(prompt)
-		input := strings.TrimSpace(readLine(reader))
+		input := strings.TrimSpace(readLine(inputReader))
 		for _, option := range allowed {
 			if strings.EqualFold(input, option) {
 				return option
@@ -56,7 +53,7 @@ func readLine(r *bufio.Reader) string {
 
 func waitEnter(message string) {
 	fmt.Print(message)
-	bufio.NewReader(os.Stdin).ReadString('\n')
+	_, _ = inputReader.ReadString('\n')
 }
 
 func readTolerance(path string) (int, error) {
@@ -86,11 +83,7 @@ func readTolerance(path string) (int, error) {
 	return tolerance, nil
 }
 
-// ===================================================================================
-// TERMINAL PROCESS SPAWNER (WINDOWS)
-// ===================================================================================
-
-func spawnTerminal(title, command string) {
+func spawnTerminal(title, command string) error {
 	psCommand := fmt.Sprintf(
 		"$host.UI.RawUI.WindowTitle='%s'; %s",
 		title,
@@ -106,20 +99,57 @@ func spawnTerminal(title, command string) {
 		"-Command",
 		psCommand,
 	)
-	_ = cmd.Start()
+	return cmd.Start()
 }
 
-// ===================================================================================
-// MAIN
-// ===================================================================================
+func waitForTCP(address string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", address, 250*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("%s did not become ready within %s", address, timeout)
+}
+
+func waitForCluster(address string, required int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", address, 500*time.Millisecond)
+		if err == nil {
+			_ = conn.SetDeadline(time.Now().Add(time.Second))
+			reader := bufio.NewReader(conn)
+			_, readyErr := reader.ReadString('\n')
+			if readyErr == nil {
+				_, err = fmt.Fprint(conn, "STATUS\r\n")
+			}
+			response := ""
+			if err == nil && readyErr == nil {
+				response, err = reader.ReadString('\n')
+			}
+			_ = conn.Close()
+			if err == nil {
+				var members, alive, tolerance, messages int
+				if _, scanErr := fmt.Sscanf(strings.TrimSpace(response), "STATUS members=%d alive=%d tolerance=%d messages=%d", &members, &alive, &tolerance, &messages); scanErr == nil && alive >= required {
+					return nil
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("cluster did not register %d live members within %s", required, timeout)
+}
 
 func main() {
 	fmt.Println("========================================")
 	fmt.Println("     TOLEREX CLUSTER DEPLOY LAUNCHER    ")
 	fmt.Println("========================================")
 
-	memberCount := askInt("Number of CLUSTER MEMBERS [Default 6]: ", 1)
-	clientCount := askInt("Number of STRESS CLIENTS  [Default 4]: ", 0)
+	memberCount := askInt("Number of CLUSTER MEMBERS [Default 6]: ", 1, 6)
+	clientCount := askInt("Number of STRESS CLIENTS  [Default 4]: ", 0, 4)
 
 	memberIOMode := askChoice(
 		"Member Disk IO Mode [buffered/unbuffered]: ",
@@ -133,8 +163,8 @@ func main() {
 	csvMode := "no"
 	if clientCount > 0 {
 		fmt.Println("\n--- Client Configuration ---")
-		stressMins = askInt("Stress Test Duration (minutes, 0 for interactive): ", 0)
-		flushRate = askInt("Client Flush Rate (1=unbuffered, 1000=default): ", 1)
+		stressMins = askInt("Stress Test Duration (minutes, 0 for interactive): ", 0, 0)
+		flushRate = askInt("Client Flush Rate (1=unbuffered, 1000=default): ", 1, 1000)
 		measureMode = askChoice("Enable RTT measurement? [yes/no]: ", "yes", "no")
 		if measureMode == "yes" {
 			csvMode = askChoice("Enable CSV output for detailed metrics? [yes/no]: ", "yes", "no")
@@ -197,54 +227,66 @@ func main() {
 
 	waitEnter("Press ENTER to launch the cluster...")
 
-	// 1. Start Leader
 	fmt.Println("\n--- Leader Configuration ---")
 	balancerStrat := askChoice("Load Balancer Strategy [least_loaded / p2c]: ", "least_loaded", "p2c")
 
 	fmt.Println("\n[1/3] Launching Leader node...")
-	spawnTerminal(
+	if err := spawnTerminal(
 		"TOLEREX-LEADER [PORT:6666]",
 		fmt.Sprintf(
 			"cd \"%s\"; "+
 				"$env:LEADER_GRPC_PORT='5555'; "+
 				"$env:LEADER_METRICS_PORT='9090'; "+
 				"$env:BALANCER_STRATEGY='%s'; "+
-				"go run ./cmd/leader/main.go",
+				"go run ./cmd/leader",
 			baseDir,
 			balancerStrat,
 		),
-	)
-
-	time.Sleep(2 * time.Second)
+	); err != nil {
+		fmt.Printf("ERROR: leader could not be started: %v\n", err)
+		return
+	}
+	if err := waitForTCP("127.0.0.1:5555", 20*time.Second); err != nil {
+		fmt.Printf("ERROR: %v\n", err)
+		return
+	}
 	fmt.Println("Leader process started.")
 
-	// 2. Start Members
 	fmt.Printf("[2/3] Launching %d Members...\n", memberCount)
 	for i := 0; i < memberCount; i++ {
 		grpcPort := startGrpcPort + i
 		metricsPort := startMetricPort + i
 
-		spawnTerminal(
+		if err := spawnTerminal(
 			fmt.Sprintf("MEMBER-%d [GRPC:%d]", i+1, grpcPort),
 			fmt.Sprintf(
 				"cd \"%s\"; "+
 					"$env:LEADER_ADDR='localhost:5555'; "+
 					"$env:MEMBER_ADDR='localhost:%d'; "+
-					"go run ./cmd/member/main.go -port=%d -metrics=%d -io=%s",
+					"go run ./cmd/member -port=%d -metrics=%d -io=%s",
 				baseDir,
 				grpcPort,
 				grpcPort,
 				metricsPort,
 				memberIOMode,
 			),
-		)
-		time.Sleep(500 * time.Millisecond)
+		); err != nil {
+			fmt.Printf("ERROR: member-%d could not be started: %v\n", i+1, err)
+			return
+		}
 	}
-
-	time.Sleep(3 * time.Second)
+	for i := 0; i < memberCount; i++ {
+		if err := waitForTCP(fmt.Sprintf("127.0.0.1:%d", startGrpcPort+i), 20*time.Second); err != nil {
+			fmt.Printf("ERROR: %v\n", err)
+			return
+		}
+	}
+	if err := waitForCluster(leaderTCPAddr, memberCount, 20*time.Second); err != nil {
+		fmt.Printf("ERROR: %v\n", err)
+		return
+	}
 	fmt.Println("Cluster membership formed.")
 
-	// 3. Start Clients (optional)
 	if clientCount > 0 {
 		fmt.Printf("[3/3] Launching %d Clients...\n", clientCount)
 		for i := 0; i < clientCount; i++ {
@@ -253,7 +295,6 @@ func main() {
 
 			title := fmt.Sprintf("CLIENT-%d", i+1)
 
-			// Build command flags
 			flags := fmt.Sprintf("-addr %s -id %s -offset %d -flush %d", leaderTCPAddr, clientID, offsetVal, flushRate)
 
 			if stressMins > 0 {
@@ -271,11 +312,13 @@ func main() {
 				flags += fmt.Sprintf(" > %s", csvFile)
 			}
 
-			spawnTerminal(
+			if err := spawnTerminal(
 				title,
-				fmt.Sprintf("cd \"%s\"; go run ./cmd/client/main.go %s", baseDir, flags),
-			)
-			time.Sleep(300 * time.Millisecond)
+				fmt.Sprintf("cd \"%s\"; go run ./cmd/client %s", baseDir, flags),
+			); err != nil {
+				fmt.Printf("ERROR: client-%d could not be started: %v\n", i+1, err)
+				return
+			}
 		}
 	} else {
 		fmt.Println("[3/3] Client launch skipped (0 clients requested).")

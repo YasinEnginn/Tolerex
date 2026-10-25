@@ -1,67 +1,40 @@
-// ===================================================================================
-// TOLEREX – STORAGE LAYER (WRITE PATH)
-// ===================================================================================
-//
-// This file implements the low-level, filesystem-backed write operation
-// for the Tolerex distributed storage system.
-//
-// From a systems programming perspective, this function:
-//
-// - Persists message content to disk using a deterministic file layout
-// - Ensures the target directory exists before writing
-// - Relies on the operating system for buffering and durability semantics
-// - Performs a synchronous write using os.WriteFile
-//
-// Design characteristics:
-//
-// - One message = one file
-// - File naming convention: <id>.msg
-// - Directory layout: <baseDir>/messages/
-// - No in-memory buffering or caching
-//
-// Durability semantics:
-//
-// - Data is written using os.WriteFile
-// - fsync is NOT explicitly invoked
-// - Atomicity is dependent on the underlying filesystem behavior
-//
-// This implementation is intentionally minimal and explicit,
-// making it easy to reason about correctness and failure modes.
-//
-// ===================================================================================
-
 package storage
 
 import (
-	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
+
 	"tolerex/internal/logger"
 )
 
-// --- IO MODES ---
 const (
 	ModeBuffered   = "buffered"
 	ModeUnbuffered = "unbuffered"
 )
 
-// --- WRITE MESSAGE ---
-// Writes a message to disk using its numeric identifier as filename.
-//
-// Parameters:
-// - baseDir : base directory assigned to the Member
-// - id      : message identifier
-// - text    : message payload
-//
-// Returns:
-// - error if directory creation or file write fails
-// --- WRITE MESSAGE (DISPATCHER) ---
-func WriteMessage(baseDir string, id int, text string, mode string) error {
+var writeLocks [256]sync.Mutex
 
-	// Ensure messages directory exists
+func writeLock(path string) *sync.Mutex {
+	hash := uint32(2166136261)
+	for index := 0; index < len(path); index++ {
+		hash ^= uint32(path[index])
+		hash *= 16777619
+	}
+	return &writeLocks[hash%uint32(len(writeLocks))]
+}
+
+func IsValidMode(mode string) bool {
+	return mode == ModeBuffered || mode == ModeUnbuffered
+}
+
+// WriteMessage atomically replaces the message file. Unbuffered mode also
+// synchronizes the temporary file before the rename.
+func WriteMessage(baseDir string, id int, text string, mode string) error {
 	dir := filepath.Join(baseDir, "messages")
-	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		logger.Error(logger.Member, "WriteMessage: failed to create messages dir path=%s err=%v", dir, err)
 		return err
 	}
@@ -69,33 +42,51 @@ func WriteMessage(baseDir string, id int, text string, mode string) error {
 	switch mode {
 	case ModeUnbuffered:
 		logger.Debug(logger.Member, "WriteMessage: writing unbuffered msg_id=%d", id)
-		return writeUnbuffered(dir, id, text)
-	default:
+		return writeAtomic(dir, id, text, true)
+	case ModeBuffered:
 		logger.Debug(logger.Member, "WriteMessage: writing buffered msg_id=%d", id)
-		return writeBuffered(dir, id, text)
+		return writeAtomic(dir, id, text, false)
+	default:
+		return fmt.Errorf("invalid I/O mode %q", mode)
 	}
 }
 
-func writeBuffered(dir string, id int, text string) error {
+func writeAtomic(dir string, id int, text string, durable bool) (err error) {
 	filename := filepath.Join(dir, strconv.Itoa(id)+".msg")
+	lock := writeLock(filename)
+	lock.Lock()
+	defer lock.Unlock()
 
-	f, err := os.Create(filename)
+	f, err := os.CreateTemp(dir, "."+strconv.Itoa(id)+"-*.tmp")
 	if err != nil {
-		logger.Error(logger.Member, "writeBuffered: failed to create file id=%d path=%s err=%v", id, filename, err)
+		logger.Error(logger.Member, "writeAtomic: failed to create temp file id=%d err=%v", id, err)
 		return err
 	}
-	defer f.Close()
-
-	w := bufio.NewWriter(f)
-	if _, err := w.WriteString(text); err != nil {
-		logger.Error(logger.Member, "writeBuffered: failed to write file id=%d path=%s err=%v", id, filename, err)
+	tempName := f.Name()
+	defer func() {
+		_ = f.Close()
+		if err != nil {
+			_ = os.Remove(tempName)
+		}
+	}()
+	if err = f.Chmod(0o644); err != nil {
 		return err
 	}
-	return w.Flush()
-}
 
-func writeUnbuffered(dir string, id int, text string) error {
-	filename := filepath.Join(dir, strconv.Itoa(id)+".msg")
-	logger.Debug(logger.Member, "writeUnbuffered: writing file id=%d path=%s", id, filename)
-	return os.WriteFile(filename, []byte(text), 0644)
+	if _, err = f.WriteString(text); err != nil {
+		logger.Error(logger.Member, "writeAtomic: failed to write file id=%d path=%s err=%v", id, filename, err)
+		return err
+	}
+	if durable {
+		if err = f.Sync(); err != nil {
+			return err
+		}
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tempName, filename); err != nil {
+		return err
+	}
+	return nil
 }

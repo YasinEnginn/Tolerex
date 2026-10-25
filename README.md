@@ -1,491 +1,359 @@
-<div align="center">
+# Tolerex
 
-<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=24&duration=3000&pause=800&color=00ADD8&center=true&vCenter=true&width=750&lines=Distributed+Storage+System;Fault-Tolerant+Message+Queue;Leader-Based+Replication;Go+%2B+gRPC+%2B+mTLS;Inspired+by+Kafka+%26+RabbitMQ" />
+[![CI](https://github.com/YasinEnginExpert/Dagitik_Mesaj_Kayit_Servisi/actions/workflows/ci.yml/badge.svg)](https://github.com/YasinEnginExpert/Dagitik_Mesaj_Kayit_Servisi/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-<h1>Tolerex - HaToKuSe Distributed Message Storage System</h1>
+Tolerex is a compact distributed message-storage service written in Go. A single leader accepts a line-based TCP protocol, selects storage members, and replicates each message over mutually authenticated gRPC.
 
-<p>
-  <img src="https://img.shields.io/badge/Language-Go-00ADD8?logo=go&logoColor=white" />
-  <img src="https://img.shields.io/badge/gRPC-Protobuf-4A154B?logo=grpc&logoColor=white" />
-  <img src="https://img.shields.io/badge/Protocol-HaToKuSe-orange" />
-  <img src="https://img.shields.io/badge/Security-mTLS-success" />
-  <img src="https://img.shields.io/badge/Status-Completed-8A2BE2" />
-</p>
-
-<p>
-  <b>Tolerex</b> is a <b>fault-tolerant distributed message storage system</b><br/>
-  developed as part of the <b>System Programming</b> course.
-</p>
-
-<p>
-  Leader-based architecture | Configurable replication factor |
-  Crash-tolerant reads | Disk persistence | Secure gRPC communication
-</p>
-
-<p>
-  <a href="#quick-start">Quick Start</a> |
-  <a href="#architecture">Architecture</a> |
-  <a href="#test-scenarios">Test Scenarios</a> |
-  <a href="#project-structure">Project Structure</a>
-</p>
-
-</div>
-
-## Contents
-
-- [Overview](#overview)
-- [Technology Stack](#technology-stack)
-- [Quick Start](#quick-start)
-- [Monitoring](#monitoring)
-- [Service Ports](#service-ports)
-- [Configuration](#configuration)
-- [Architecture](#architecture)
-- [Test Client](#test-client)
-- [Operational Tips](#operational-tips)
-- [Troubleshooting](#troubleshooting)
-- [Performance Notes](#performance-notes)
-- [Project Structure](#project-structure)
-- [Testing and Cleanup](#testing-and-cleanup)
-- [Test Scenarios](#test-scenarios)
-- [Roadmap and References](#roadmap-and-references)
-
-## Overview
-
-Core capabilities:
-
-- Replication and fault tolerance
-- Load-balanced write placement
-- Crash-aware read fallback
-- Disk-backed persistence
-- Secure inter-node communication with mTLS
-
-Client interaction uses a text protocol called HaToKuSe.
-
-Current scope:
-
-- Single leader process (no leader election yet)
-- Strong focus on local/dev cluster workflows
-- Course-project oriented architecture with clear, inspectable code paths
-
-## Technology Stack
-
-| Layer | Technology | Purpose |
-| :--- | :--- | :--- |
-| Language | Go 1.24+ | Core implementation |
-| RPC | gRPC + Protobuf | Leader-member communication |
-| Transport Security | mTLS | Mutual node authentication |
-| Metrics | Prometheus | Time-series collection |
-| Visualization | Grafana | Operational dashboarding |
-| Local Orchestration | Docker Compose | Repeatable local deploy |
-
-## Quick Start
-
-### Prerequisites
-
-- Go 1.24+
-- Protocol Buffers compiler (`protoc`) for regenerating `.proto` files (optional)
-- OpenSSL for certificate generation (certificates are already included)
-- Docker and Docker Compose for monitoring (optional)
-
-### Install
-
-```bash
-git clone https://github.com/YasinEnginExpert/Tolerex.git
-cd Tolerex
-go mod tidy
-```
-
-### Verify Build
-
-```bash
-go build ./cmd/leader
-go build ./cmd/client
-go build ./cmd/member
-go build ./cmd/launcher
-```
-
-### Option 1: Automated Local Launch (Windows)
-
-```bash
-go run ./cmd/launcher/main.go
-```
-
-The launcher starts leader and members in separate terminals.
-Stress clients are optional (set client count to `0` to skip).
-Recommended values: `6` members and `4` stress clients.
-Note: enter these values explicitly in the launcher prompts.
-
-### Option 2: Manual Host Launch
-
-Leader:
-
-```powershell
-$env:LEADER_GRPC_PORT='5555'
-$env:LEADER_METRICS_PORT='9090'
-go run ./cmd/leader/main.go
-```
-
-Member:
-
-```powershell
-$env:LEADER_ADDR='localhost:5555'
-$env:MEMBER_ADDR='localhost:5556'
-go run ./cmd/member/main.go -port=5556 -metrics=9092 -io=buffered
-```
-
-Client:
-
-```bash
-go run ./cmd/client/main.go
-go run ./cmd/client/main.go -measure
-go run ./cmd/client/main.go -measure -csv > measured/client.csv
-go run ./cmd/client/main.go -measure -csv -id client-1 -offset 0
-go run ./cmd/client/main.go -measure -csv -id client-2 -offset 100000
-```
-
-### Option 3: Full Docker Cluster Launch
-
-```bash
-docker compose -f deploy/docker-compose.cluster.yml up -d --build
-# or: make deploy-cluster-up
-```
-
-Stop:
-
-```bash
-docker compose -f deploy/docker-compose.cluster.yml down
-# or: make deploy-cluster-down
-```
-
-After cluster startup, run clients from host (example):
-
-```bash
-make stress-client-30m
-```
-
-30-minute continuous measured stress client:
-
-```bash
-make stress-client-30m
-```
-
-30-minute continuous measured stress clients (parallel):
-
-```bash
-make stress-clients-30m
-```
-
-Quick interactive commands:
-
-```text
-SET 1 hello
-GET 1
-1000 SET load_test
-QUIT
-```
-
-Quick health check after startup:
-
-```bash
-curl http://localhost:9090/metrics
-```
-
-If member metrics are enabled, also check:
-
-```bash
-curl http://localhost:9092/metrics
-```
-
-## Monitoring
-
-Monitoring-only mode (Leader/Member on host):
-
-```bash
-docker compose -f deploy/docker-compose.yml up -d
-# or: make deploy-monitoring-up
-```
-
-Full Docker cluster mode (Leader + Members + Monitoring):
-
-```bash
-docker compose -f deploy/docker-compose.cluster.yml up -d --build
-# or: make deploy-cluster-up
-```
-
-Note: deploy Compose files intentionally do not run client containers.
-Run clients separately (for example `make stress-client-30m`).
-
-Access:
-
-- Prometheus targets: `http://localhost:9091/targets`
-- Grafana UI: `http://localhost:3000` (default `admin/admin`)
-
-Import dashboard:
-
-- `deploy/grafana_dashboard.json`
-- Detailed deploy guide: `deploy/manual.md`
-- Datasource/dashboard provisioning is automatic on startup (no manual datasource setup required)
-
-The dashboard now includes:
-
-- SRE summary KPIs (throughput, error rate, p95, p99)
-- Throughput/error breakdown by method and status
-- Instance-level throughput and scrape health
-- Stored message totals per member instance
-- Top methods by load for bottleneck analysis
-
-## Service Ports
-
-| Service | Default Port | Notes |
-| :--- | :--- | :--- |
-| Leader gRPC | `5555` | Member registration and replication path |
-| Leader TCP | `6666` | Client command protocol (HaToKuSe) |
-| Leader Metrics | `9090` | Prometheus scrape endpoint |
-| Member-1 gRPC | `5556` | Storage RPC |
-| Member-2 gRPC | `5557` | Storage RPC |
-| Member-3 gRPC | `5558` | Storage RPC |
-| Member-4 gRPC | `5559` | Storage RPC |
-| Member-5 gRPC | `5560` | Storage RPC |
-| Member-6 gRPC | `5561` | Storage RPC |
-| Member Metrics | `9092-9097` | Prometheus scrape endpoints |
-| Prometheus UI | `9091` | Exposed from container port `9090` |
-| Grafana UI | `3000` | Dashboard and alerting UI |
-
-## Configuration
-
-| Variable | Example | Description |
-| :--- | :--- | :--- |
-| `LEADER_GRPC_PORT` | `5555` | Leader gRPC port |
-| `LEADER_TCP_PORT` | `6666` | Leader TCP command port |
-| `LEADER_TCP_BIND` | `127.0.0.1` or `0.0.0.0` | Leader TCP bind host |
-| `LEADER_METRICS_PORT` | `9090` | Leader metrics port |
-| `LEADER_ADDR` | `localhost:5555` | Member -> Leader registration/heartbeat target |
-| `MEMBER_ADDR` | `localhost:5556` | Member self address |
-| `MEMBER_GRPC_PORT` | `5556` | Default member gRPC port |
-| `MEMBER_METRICS_PORT` | `9092` | Default member metrics port |
-| `MEMBER_IO_MODE` | `buffered` or `unbuffered` | Member disk write mode |
-| `MEMBER_EXPECTED_LEADER_CN` | `leader` | Expected leader certificate CN for member-side authorization |
-| `BALANCER_STRATEGY` | `least_loaded` or `p2c` | Replica selection strategy |
-| `TOLERANCE_CONF` | `config/tolerance.conf` | Tolerance file path |
-| `TOLEREX_TEST_MODE` | `1` or `0` | Test mode toggle |
-| `TOLEREX_BASE_DIR` | `D:\Tolerex` | Optional base directory override for launcher |
-
-### Load Balancer Strategy Notes
-
-- `least_loaded`: sort-based selection, practical complexity `O(N log N)`.
-- `p2c`: uses a sparse candidate pool and removes only winners; with small fixed tolerance, selection cost is near constant in practice.
+Tolerex is an educational storage system, not a production message queue. It does not provide ordering, delivery acknowledgements, leader election, consensus, automatic replica repair, or authenticated client access.
 
 ## Architecture
 
-Roles:
-
-- Client: sends `SET` and `GET` to leader over TCP.
-- Leader: membership, load balancing, replication coordination, metadata/state management.
-- Member: stores and retrieves message data on disk.
-
-Request flow:
-
-1. Client sends request to leader.
-2. Leader resolves tolerance and picks replicas.
-3. Leader replicates via gRPC.
-4. Members persist and ACK.
-5. Leader returns final result.
-
-Read behavior:
-
-- Leader first tries known replica list from metadata.
-- If metadata is missing, leader can fall back to scanning alive members.
-- If no replica returns data, client gets `NOT_FOUND`.
-
-System interaction map:
-
 ```mermaid
 flowchart LR
-  C[Client] -->|TCP SET/GET| L[Leader]
-  L -->|gRPC Store/Retrieve| M1[Member 1]
-  L -->|gRPC Store/Retrieve| M2[Member 2]
-  L -->|gRPC Store/Retrieve| M3[Member 3]
-  L -->|/metrics| P[Prometheus]
-  M1 -->|/metrics| P
-  M2 -->|/metrics| P
-  M3 -->|/metrics| P
-  P --> G[Grafana]
+    C[CLI or TCP client] -->|TCP :6666| L[Leader]
+    L -->|mTLS gRPC| M1[Member 1]
+    L -->|mTLS gRPC| M2[Member 2]
+    L -->|mTLS gRPC| MN[Member N]
+    L -->|/metrics :9090| P[Prometheus]
+    M1 -->|/metrics| P
+    M2 -->|/metrics| P
+    MN -->|/metrics| P
+    P --> G[Grafana]
 ```
 
-## Test Client
+- The leader tracks membership, liveness, replica locations, and member load.
+- Members store one file per message under `internal/data/member-<port>/messages/`.
+- `TOLERANCE` is the required replica count. A write succeeds only after that many members store it.
+- `least_loaded` and `p2c` (Power of Two Choices) placement strategies are available.
+- Members send heartbeats every five seconds. Silent or failed members are excluded from new writes.
+- Leader metadata is persisted under `internal/data/leader_state.json` and flushed on graceful shutdown.
+- Leader/member gRPC traffic uses mTLS. The client-facing TCP protocol is plaintext.
 
-Main flags:
+## Requirements
+
+Run commands from the repository root. Relative certificate, configuration, test-data, and runtime-data paths depend on it.
+
+Required for local use:
+
+- Git
+- Go 1.26.10 or newer
+- Windows PowerShell 5.1 or newer for the provided scripts and launcher
+- Free default ports `5555`, `5556`, `5557`, `6666`, `9090`, `9092`, and `9093`
+
+Required only for container deployment and dashboards:
+
+- Docker Desktop or Docker Engine with the `docker compose` plugin
+- Free host ports `3000`, `5555`, `6666`, `9090`, and `9091`
+
+Verify the installed tools:
+
+```powershell
+go version
+docker --version
+docker compose version
+```
+
+`protoc` is not required unless `proto/message.proto` is changed; generated Go sources are committed.
+
+## Get the project
+
+```powershell
+git clone https://github.com/YasinEnginExpert/Dagitik_Mesaj_Kayit_Servisi.git
+Set-Location Dagitik_Mesaj_Kayit_Servisi
+go mod download
+```
+
+Generate the local development CA and the `leader` and `member` certificates:
+
+```powershell
+go run ./cmd/certgen
+```
+
+The generated certificates and private keys are ignored by Git. If they already exist, keep them. Use `go run ./cmd/certgen -force` only when intentionally rotating the entire local CA, with all Tolerex processes and containers stopped.
+
+## Quick start with Docker
+
+This starts one leader, six members, Prometheus, and Grafana. Docker must be running.
+
+1. Create the local Compose environment file:
+
+   ```powershell
+   Copy-Item .env.example .env
+   notepad .env
+   ```
+
+   Replace `GRAFANA_ADMIN_PASSWORD=change-me` with a non-default local password, then save the file. The other entries document process defaults; the cluster Compose file sets its own container addresses and ports.
+
+2. Validate and start the stack:
+
+   ```powershell
+   docker compose -f deploy/docker-compose.cluster.yml config --quiet
+   docker compose -f deploy/docker-compose.cluster.yml up -d --build
+   docker compose -f deploy/docker-compose.cluster.yml ps
+   ```
+
+3. Open the client:
+
+   ```powershell
+   go run ./cmd/client
+   ```
+
+4. Enter these commands at the `tolerex>` prompt:
+
+   ```text
+   STATUS
+   SET 1 hello
+   GET 1
+   QUIT
+   ```
+
+   A healthy fresh cluster reports six live members and `tolerance=2`. The expected write/read responses are `OK` and `hello`.
+
+5. Open monitoring:
+
+   - Leader metrics: <http://127.0.0.1:9090/metrics>
+   - Prometheus: <http://127.0.0.1:9091>
+   - Grafana: <http://127.0.0.1:3000> (`admin` plus the password from `.env`)
+
+6. Stop the stack while preserving its named volumes:
+
+   ```powershell
+   docker compose -f deploy/docker-compose.cluster.yml down
+   ```
+
+   Add `--volumes` only when all Docker-backed Tolerex and Grafana data should be permanently reset.
+
+## Local start without Docker
+
+Generate certificates first, then open four PowerShell terminals in the repository root. The first three commands remain running.
+
+Terminal 1 — leader:
+
+```powershell
+go run ./cmd/leader
+```
+
+Terminal 2 — first member:
+
+```powershell
+go run ./cmd/member -port=5556 -metrics=9092 -io=buffered
+```
+
+Terminal 3 — second member:
+
+```powershell
+go run ./cmd/member -port=5557 -metrics=9093 -io=buffered
+```
+
+Terminal 4 — client:
+
+```powershell
+go run ./cmd/client
+```
+
+Run `STATUS` first. With the default `TOLERANCE=2`, writes require at least two live members. Stop each server with `Ctrl+C`; graceful leader shutdown flushes its latest metadata.
+
+### Windows launcher
+
+The launcher opens separate PowerShell windows for the leader, members, and clients:
+
+```powershell
+go run ./cmd/launcher
+```
+
+For the simplest interactive cluster, choose six members, zero clients, `buffered` I/O, and `least_loaded`. Blank input is accepted only where a numeric default is shown; the I/O mode and load-balancer strategy must be typed. Exiting the launcher does not stop the opened node processes.
+
+## TCP protocol
+
+The server sends `Tolerex ready` after connection. Every command and response is one CRLF-terminated line; commands are case-insensitive.
+
+| Command | Result |
+| --- | --- |
+| `SET <id> <message>` | Stores or overwrites an ID and returns `OK` after the configured replica count succeeds. |
+| `GET <id>` | Returns `VALUE <message>`, `NOT_FOUND`, or an error. The bundled client displays only `<message>`. |
+| `STATUS` | Returns registered/live member counts, replica count, and mapped-message count. |
+| `HELP` | Returns the wire-protocol command summary. |
+| `QUIT` or `EXIT` | Returns `Bye` and closes the connection. |
+
+Protocol limits:
+
+- IDs are integers from `0` through `2147483647`.
+- Messages must be non-empty and cannot contain a newline.
+- A message can be at most 4 MiB.
+- `FILE` and `<count> SET ...` are bundled-client helpers, not server protocol commands.
+
+## Client modes
+
+Common examples:
+
+```powershell
+# Interactive client with RTT output
+go run ./cmd/client -measure
+
+# Run randomized load for 30 seconds
+go run ./cmd/client -duration 30s
+
+# Write measurement rows to a CSV file
+New-Item -ItemType Directory -Path measured -Force | Out-Null
+go run ./cmd/client -measure -csv -duration 30s -id client-1 > measured/client-1.csv
+
+# Four concurrent measured clients for 30 minutes
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-stress-clients.ps1 -DurationMinutes 30 -Clients 4
+```
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `-addr` | `127.0.0.1:6666` | Leader address; comma-separated fallback addresses are accepted. |
+| `-measure` | `false` | Measures request round-trip time. |
+| `-csv` | `false` | Writes CSV to stdout; requires `-measure`. |
+| `-flush` | `1000` | Bulk-operation batch size; measurement mode always uses `1`. |
+| `-offset` | `0` | Starting ID offset for generated load. Use distinct offsets for concurrent clients. |
+| `-id` | `client` | Client label written to CSV rows. |
+| `-stress` | `0` | Stress duration in whole minutes. |
+| `-duration` | `0` | Go duration such as `30s` or `5m`; overrides `-stress`. |
+
+Stress mode uses the files under `test_data/` when available. Keep stdout redirected only when `-csv` is enabled; operational messages are written to stderr.
+
+## Configuration
+
+The default replica count is defined in `config/tolerance.conf`:
 
 ```text
--addr string      Leader TCP address (default "127.0.0.1:6666")
--measure          Enable RTT measurement
--csv              Emit CSV to stdout (requires -measure)
--id string        Client ID (default "client")
--offset int       Starting ID offset
--flush int        Flush interval (default 1000)
--stress int       Stress duration in minutes
+TOLERANCE=2
 ```
 
-CSV format:
+Changing it affects new writes and requires at least that many live members. Restart the leader after changing the file.
 
-```csv
-Timestamp,ClientID,Operation,Count,Bytes,RTT_us,Mode,Status,PayloadSize
+Frequently used environment variables:
+
+| Variable | Default | Applies to |
+| --- | --- | --- |
+| `BALANCER_STRATEGY` | `least_loaded` | Leader; accepts `least_loaded` or `p2c`. |
+| `LEADER_GRPC_PORT` | `5555` | Leader/member gRPC endpoint. |
+| `LEADER_TCP_BIND` | `127.0.0.1` | Client-facing bind address. |
+| `LEADER_TCP_PORT` | `6666` | Client-facing TCP port. |
+| `LEADER_METRICS_PORT` | `9090` | Leader Prometheus endpoint. |
+| `LEADER_STATS_INTERVAL` | `0` | Terminal status refresh; use `0` or a duration such as `5s`. |
+| `LEADER_ADDR` | `localhost:5555` | Member registration/heartbeat target. |
+| `MEMBER_ADDR` | `localhost:<member-port>` | Dialable address advertised to the leader. |
+| `MEMBER_GRPC_PORT` | `5556` | Member gRPC port when `-port` is omitted. |
+| `MEMBER_METRICS_PORT` | `9092` | Member metrics port when `-metrics` is omitted. |
+| `MEMBER_IO_MODE` | `buffered` | Member storage mode; accepts `buffered` or `unbuffered`. |
+| `TOLERANCE_CONF` | `config/tolerance.conf` | Replica configuration file. |
+| `TOLEREX_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error`. |
+| `TOLEREX_LOG_FILE` | empty | Empty enables rotating files plus stderr; `off` uses stderr only. |
+| `TOLEREX_LOG_DIR` | `logs` | Directory for rotating process logs. |
+| `TOLEREX_BASE_DIR` | current directory | Optional repository path override used only by the Windows launcher. |
+
+Certificate path and expected certificate-CN variables are listed in `.env.example`. Local Go commands do not automatically load `.env`; set variables in the current shell before starting a process. Compose reads `.env` for interpolation.
+
+Example:
+
+```powershell
+$env:BALANCER_STRATEGY='p2c'
+$env:TOLEREX_LOG_LEVEL='debug'
+go run ./cmd/leader
 ```
 
-Common command cookbook:
+## Testing and quality checks
 
-| Goal | Command |
-| :--- | :--- |
-| Single write | `SET 100 hello` |
-| Single read | `GET 100` |
-| Bulk write | `1000 SET payload` |
-| Graceful exit | `QUIT` |
+Generate certificates before integration or chaos tests.
 
-## Operational Tips
+```powershell
+# All package tests
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-tests.ps1
 
-- For realistic throughput testing, run client without `-measure` first.
-- Use `-measure -csv` for latency analysis, not peak TPS measurement.
-- For a sustained 30-minute measured run, use `make stress-client-30m`.
-- For higher pressure tests (parallel clients), use `make stress-clients-30m`.
-- Keep member `-io` mode explicit (`buffered` or `unbuffered`) in performance comparisons.
-- Prefer `make deploy-cluster-up` for consistent local demo environments.
+# Package tests plus the Go race detector
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-tests.ps1 -Race
+
+# Storage and balancer benchmarks
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-tests.ps1 -Bench
+
+# Three-minute six-member process-chaos test
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-chaos-test.ps1
+```
+
+The chaos test repeatedly kills and restarts one, two, or four members, rapidly flaps a member, hard-kills the leader after an acknowledged write, checks live canary writes/reads, and audits replica files. It uses isolated high ports and removes its generated binaries and data unless `-KeepArtifacts` is supplied.
+
+Direct checks used by CI:
+
+```powershell
+go test ./... -count=1 -cover
+go test -race ./... -count=1
+go vet ./...
+go mod verify
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+```
+
+See [docs/testing.md](docs/testing.md) for the exhaustive test matrix and profiling command.
+
+## Monitoring modes
+
+The full-cluster Compose file includes application nodes and monitoring. To monitor six nodes running directly on the Windows host instead, start them first and run:
+
+```powershell
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+Create `.env` from `.env.example` and set `GRAFANA_ADMIN_PASSWORD` before starting this stack. Its Prometheus configuration expects the leader on port `9090` and six member metrics endpoints on ports `9092` through `9097`, reached through `host.docker.internal`.
+
+## Cleanup and reset
+
+Preview local cleanup before deleting anything:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clean-test-artifacts.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clean-runtime-artifacts.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clean-docker-artifacts.ps1 -DryRun
+```
+
+Remove `-DryRun` to execute the selected cleanup. Runtime cleanup permanently removes local logs, measured CSV files, leader metadata, and member message files. Docker cleanup is project-scoped but permanently removes the project's containers, volumes, networks, and locally built images.
 
 ## Troubleshooting
 
-Leader starts but client cannot connect:
+| Symptom | Check |
+| --- | --- |
+| `Failed to load ... credentials` | Run `go run ./cmd/certgen` from the repository root. If files already exist, verify their paths rather than replacing them immediately. |
+| `ERROR: store failed` | Run `STATUS`; `alive` must be at least the configured `tolerance`. Check member terminals for registration or mTLS errors. |
+| A member keeps retrying registration | Start the leader first and verify `LEADER_ADDR`, `MEMBER_ADDR`, ports, and certificates. |
+| `bind: ... address already in use` | Stop the older Tolerex process/container or choose a consistent unused application and metrics port. |
+| Docker reports that the daemon is unavailable | Start Docker Desktop/Engine, then rerun `docker info`. |
+| Compose rejects `GRAFANA_ADMIN_PASSWORD` | Create `.env` from `.env.example` and replace `change-me`. |
+| Old members appear in `STATUS` | Stop local nodes, preview `clean-runtime-artifacts.ps1 -DryRun`, then run it if the stored messages may be discarded. |
+| Grafana has no member data in host-monitoring mode | Start six local members with metrics ports `9092`-`9097`, or use the full-cluster Compose file. |
 
-- Check `LEADER_TCP_BIND` and `LEADER_TCP_PORT`.
-- Verify no other process is using port `6666`.
-- Try `Test-NetConnection 127.0.0.1 -Port 6666` on PowerShell.
+## Operational boundaries
 
-Member fails to register:
+- There is one leader and no election or consensus protocol.
+- Leader metadata writes are batched; there is no write-ahead log.
+- Failed replicas are not automatically repaired or rebalanced.
+- Development certificates reuse role identities and are unsuitable for production.
+- Client TCP traffic has no TLS or authentication.
+- Member files and leader metadata are local-disk state, not a backup strategy.
 
-- Confirm `LEADER_ADDR` is reachable from member process.
-- Validate mTLS cert/key files under `config/tls`.
-- If using custom certificates, set `MEMBER_EXPECTED_LEADER_CN`.
+For production-oriented work, add consensus-backed leader failover, durable transactional metadata, replica repair, client authentication/TLS, per-node identities, resource quotas, and backup/restore procedures.
 
-Grafana has no data:
-
-- Open Prometheus targets page: `http://localhost:9091/targets`.
-- Ensure scrape targets are `UP`.
-- Verify leader/member `/metrics` endpoints return data.
-
-## Performance Notes
-
-Implemented optimizations:
-
-- Persistent gRPC connection reuse in leader
-- Parallel fan-out replication for store path
-- Configurable buffered/unbuffered storage writes in member
-
-Useful benchmark command:
-
-```bash
-go test -run '^$' -bench 'Benchmark(WriteMessage_|LeastLoaded_|P2C_)' ./internal/storage ./internal/server/balancer -benchmem
-```
-
-## Project Structure
+## Repository layout
 
 ```text
-.
-|-- cmd/
-|   |-- client/        # test client
-|   |-- launcher/      # local cluster launcher
-|   |-- leader/        # leader bootstrap
-|   |-- member/        # member bootstrap
-|-- config/
-|   |-- tls/
-|   `-- tolerance.conf
-|-- deploy/
-|   |-- docker-compose.yml
-|   |-- docker-compose.cluster.yml
-|   |-- manual.md
-|   |-- prometheus.local.yml
-|   |-- prometheus.cluster.yml
-|   `-- grafana_dashboard.json
-|-- docs/
-|   |-- testing.md
-|   |-- roadmap.md
-|   `-- references.md
-|-- internal/
-|   |-- logger/
-|   |-- metrics/
-|   |-- middleware/
-|   |-- security/
-|   |-- server/
-|   `-- storage/
-|-- proto/
-|-- scripts/
-|   |-- run-tests.ps1
-|   |-- run-stress-client.ps1
-|   |-- run-stress-clients.ps1
-|   |-- clean-test-artifacts.ps1
-|   |-- clean-docker-artifacts.ps1
-|   `-- clean-runtime-artifacts.ps1
-|-- test_data/
-|-- Makefile
-`-- README.md
+cmd/          Executables: leader, member, client, launcher, certificate generator
+config/       Replica-count configuration and generated local TLS files
+deploy/       Docker Compose, Prometheus, and Grafana provisioning
+docs/         Testing notes, roadmap, and references
+internal/     Storage, balancing, security, middleware, and server packages
+proto/        Protocol Buffer schema and generated Go sources
+scripts/      Test, stress, chaos, and scoped-cleanup helpers
+test_data/    Payloads used by FILE and stress-client modes
 ```
 
-## Testing and Cleanup
+Additional documentation:
 
-Use either script or `make` targets.
+- [Testing](docs/testing.md)
+- [Deployment details](deploy/manual.md)
+- [Roadmap](docs/roadmap.md)
+- [References](docs/references.md)
 
-Run tests:
+## License
 
-```bash
-make test
-make test-race
-make bench
-make test-all
-```
-
-Deploy helpers:
-
-```bash
-make deploy-monitoring-up
-make deploy-monitoring-down
-make deploy-cluster-up
-make deploy-cluster-down
-make deploy-cluster-status
-make deploy-cluster-logs
-make stress-client-30m
-make stress-client-30m-unbuffered
-make stress-clients-30m
-make stress-clients-30m-unbuffered
-```
-
-Cleanup artifacts:
-
-```bash
-make clean-test-artifacts
-make clean-runtime-artifacts
-make clean-docker-artifacts
-make clean-all-artifacts
-```
-
-Details are in `docs/testing.md`.
-
-## Test Scenarios
-
-Demo videos:
-
-- Test 1: Initial system validation  
-  https://youtu.be/kz0HX8aq4wQ
-- Test 2: Disk-based single-node storage  
-  https://youtu.be/mqYZ8ZRT5D4
-- Test 3: gRPC message model  
-  https://youtu.be/evnN6bgofg8
-- Test 4: Distributed logging with tolerance 1-2  
-  https://youtu.be/-CHNPo6JEkc
-- Test 6: General fault tolerance and load balancing  
-  https://youtu.be/TSHtgNh90gI
-- Test 7: Crash and recovery behavior  
-  https://youtu.be/3mGIgtAFrmg
-
-## Roadmap and References
-
-Moved to dedicated docs:
-
-- Roadmap: `docs/roadmap.md`
-- References: `docs/references.md`
+Tolerex is available under the [MIT License](LICENSE).

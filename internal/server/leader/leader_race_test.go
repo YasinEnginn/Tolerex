@@ -7,6 +7,7 @@ import (
 	"log"
 	"sync"
 	"testing"
+	"time"
 
 	"tolerex/internal/logger"
 	"tolerex/internal/server/shared"
@@ -35,6 +36,12 @@ func TestLeaderServer_ConcurrentStore(t *testing.T) {
 			return true // pretend replication succeeded
 		},
 	}
+	s.StartStatePersister(10 * time.Millisecond)
+	defer func() {
+		if err := s.StopStatePersister(); err != nil {
+			t.Errorf("state flush failed: %v", err)
+		}
+	}()
 
 	ctx := context.Background()
 

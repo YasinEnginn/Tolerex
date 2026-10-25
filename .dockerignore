@@ -1,0 +1,15 @@
+.git
+.github
+.idea
+.vscode
+docs
+logs
+measured
+test_data
+internal/data
+scripts
+**/*_test.go
+*.prof
+*.pprof
+coverage*.out
+.env

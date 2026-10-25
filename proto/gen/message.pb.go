@@ -22,11 +22,10 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Mesajı diske yazmak için kullanılan veri
 type StoredMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`    // benzersiz mesaj kimliği
-	Text          string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"` // mesaj içeriği
+	Id            int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Text          string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -75,7 +74,6 @@ func (x *StoredMessage) GetText() string {
 	return ""
 }
 
-// Retrieve operasyonunda sadece ID gönderilir
 type MessageID struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -120,11 +118,10 @@ func (x *MessageID) GetId() int32 {
 	return 0
 }
 
-// Store sonucunu dönen yapı
 type StoreResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`  // işlem başarılı mı?
-	Err           string                 `protobuf:"bytes,2,opt,name=err,proto3" json:"err,omitempty"` // hata varsa açıklaması
+	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	Err           string                 `protobuf:"bytes,2,opt,name=err,proto3" json:"err,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -175,7 +172,7 @@ func (x *StoreResult) GetErr() string {
 
 type MemberInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Address       string                 `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"` // Üyenin IP:port adresi
+	Address       string                 `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -338,8 +335,7 @@ const file_message_proto_rawDesc = "" +
 	"\x05Store\x12\x14.proto.StoredMessage\x1a\x12.proto.StoreResult\x122\n" +
 	"\bRetrieve\x12\x10.proto.MessageID\x1a\x14.proto.StoredMessage\x129\n" +
 	"\x0eRegisterMember\x12\x11.proto.MemberInfo\x1a\x14.proto.RegisterReply\x12<\n" +
-	"\tHeartbeat\x12\x17.proto.HeartbeatRequest\x1a\x16.google.protobuf.EmptyB\fZ\n" +
-	"/gen;protob\x06proto3"
+	"\tHeartbeat\x12\x17.proto.HeartbeatRequest\x1a\x16.google.protobuf.EmptyB\x19Z\x17tolerex/proto/gen;protob\x06proto3"
 
 var (
 	file_message_proto_rawDescOnce sync.Once

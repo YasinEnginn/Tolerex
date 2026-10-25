@@ -1,75 +1,52 @@
-# Tolerex Deploy and Monitoring
+# Deployment
 
-This guide covers two deploy modes:
+Generate local certificates and create `.env` before using Compose:
 
-- Monitoring-only (Leader/Member processes run on host)
-- Full Docker cluster (Leader + Members + Prometheus + Grafana in containers)
+```powershell
+Copy-Item .env.example .env
+go run ./cmd/certgen
+```
 
-Client processes are intentionally excluded from deploy Compose files.
+Set a non-default `GRAFANA_ADMIN_PASSWORD` in `.env`.
 
-## Prerequisites
+## Monitoring host processes
 
-- Docker Engine
-- Docker Compose v2 (`docker compose`)
+Start the leader and members on the host, then run:
 
-## Mode 1: Monitoring Only (Host Services)
-
-1. Run leader/member processes on host (ports `9090`, `9092-9097`).
-2. Start monitoring stack:
-
-```bash
+```powershell
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-3. Prometheus uses `deploy/prometheus.local.yml` and scrapes `host.docker.internal` targets.
+Prometheus scrapes the host through `host.docker.internal`.
 
-## Mode 2: Full Docker Cluster
+## Full cluster
 
-Start full stack:
-
-```bash
+```powershell
 docker compose -f deploy/docker-compose.cluster.yml up -d --build
+docker compose -f deploy/docker-compose.cluster.yml ps
 ```
 
-This uses:
+The stack contains one leader, six members, Prometheus, and Grafana. Client processes run on the host.
 
-- `deploy/prometheus.cluster.yml` for in-network scrape targets (`leader`, `member-1` ... `member-6`)
-- `Dockerfile` image `tolerex-node:latest` for leader/member services
+```powershell
+go run ./cmd/client -measure -duration 30s
+```
 
-Stop cluster:
+Access:
 
-```bash
+- Leader TCP: `127.0.0.1:6666`
+- Prometheus: `http://127.0.0.1:9091`
+- Grafana: `http://127.0.0.1:3000`
+
+Stop containers:
+
+```powershell
 docker compose -f deploy/docker-compose.cluster.yml down
 ```
 
-Run a 30-minute measured stress client from repo root:
+Delete this project's containers, volumes, and images only when a full reset is intended:
 
-```bash
-make stress-client-30m
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clean-docker-artifacts.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clean-docker-artifacts.ps1
 ```
-
-Run 4 measured stress clients in parallel:
-
-```bash
-make stress-clients-30m
-```
-
-## Access
-
-- Leader TCP: `localhost:6666`
-- Leader gRPC: `localhost:5555`
-- Prometheus: `http://localhost:9091`
-- Grafana: `http://localhost:3000` (`admin/admin`)
-
-## Grafana Dashboard
-
-Grafana is provisioned automatically at startup:
-
-- Prometheus datasource (`deploy/grafana/provisioning/datasources/prometheus.yml`)
-- Dashboard provider (`deploy/grafana/provisioning/dashboards/dashboards.yml`)
-- Dashboard JSON (`deploy/grafana_dashboard.json`)
-
-## Verification
-
-- Prometheus targets: `http://localhost:9091/targets`
-- Check `UP` state for expected jobs.

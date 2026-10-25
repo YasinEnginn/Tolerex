@@ -1,0 +1,36 @@
+# Build outputs
+.tmp/
+bin/
+*.exe
+*.test
+
+# Test and profiling artifacts
+coverage/
+coverage*.out
+*.prof
+*.pprof
+trace.out
+benchmark_detailed_report.txt
+
+# Runtime state
+logs/
+measured/
+internal/data/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+config/tls/*.crt
+config/tls/*.key
+config/tls/*.pem
+config/tls/*.p12
+config/tls/*.pfx
+config/tls/*.cnf
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+/NUL

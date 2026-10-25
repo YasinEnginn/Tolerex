@@ -2,7 +2,7 @@ package shared
 
 import "time"
 
-// MemberInfo: Metadata tracked by the Leader for each Member.
+// MemberInfo is the leader's state for one member.
 type MemberInfo struct {
 	Address    string
 	AddedAt    time.Time
@@ -11,7 +11,6 @@ type MemberInfo struct {
 	Alive      bool
 }
 
-// --- LOAD BALANCER STRATEGIES ---
 const (
 	StrategyLeastLoaded = "least_loaded"
 	StrategyP2C         = "p2c"

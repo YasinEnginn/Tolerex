@@ -13,13 +13,17 @@ import (
 	proto "tolerex/proto/gen"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type fakeStorageClient struct {
-	mu         sync.Mutex
-	hbCalls    int
-	failOnCall map[int]error
+	mu            sync.Mutex
+	hbCalls       int
+	registerCalls int
+	registerOK    bool
+	failOnCall    map[int]error
 }
 
 func (f *fakeStorageClient) Store(ctx context.Context, in *proto.StoredMessage, opts ...grpc.CallOption) (*proto.StoreResult, error) {
@@ -31,6 +35,12 @@ func (f *fakeStorageClient) Retrieve(ctx context.Context, in *proto.MessageID, o
 }
 
 func (f *fakeStorageClient) RegisterMember(ctx context.Context, in *proto.MemberInfo, opts ...grpc.CallOption) (*proto.RegisterReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.registerCalls++
+	if f.registerOK {
+		return &proto.RegisterReply{Ok: true}, nil
+	}
 	return nil, errors.New("not implemented")
 }
 
@@ -49,6 +59,12 @@ func (f *fakeStorageClient) Calls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.hbCalls
+}
+
+func (f *fakeStorageClient) RegisterCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.registerCalls
 }
 
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
@@ -165,5 +181,35 @@ func TestRunHeartbeatLoop_ReconnectsAfterHeartbeatFailure(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&closeCalls); got != 2 {
 		t.Fatalf("expected close for failed and final sessions, got %d", got)
+	}
+}
+
+func TestRunHeartbeatLoop_ReregistersAfterLeaderStateLoss(t *testing.T) {
+	memberLog := log.New(io.Discard, "", 0)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	client := &fakeStorageClient{
+		registerOK: true,
+		failOnCall: map[int]error{1: status.Error(codes.NotFound, "member is not registered")},
+	}
+	var connectCalls int32
+
+	connect := func() (*heartbeatSession, error) {
+		atomic.AddInt32(&connectCalls, 1)
+		return &heartbeatSession{client: client, close: func() error { return nil }}, nil
+	}
+	go func() {
+		runHeartbeatLoop(memberLog, "leader:5555", "member-1:5556", 10*time.Millisecond, connect, stop)
+		close(done)
+	}()
+
+	waitFor(t, 500*time.Millisecond, func() bool {
+		return client.RegisterCalls() == 1 && client.Calls() >= 2
+	})
+	close(stop)
+	waitDone(t, done, 500*time.Millisecond)
+
+	if got := atomic.LoadInt32(&connectCalls); got != 1 {
+		t.Fatalf("expected existing connection to be reused, got %d connects", got)
 	}
 }

@@ -58,7 +58,7 @@ func (b *PowerOfTwoChoicesBalancer) Pick(candidates []MemberLoad, tolerance int)
 	}
 
 	// If pool size is already <= tolerance, return all.
-	if len(candidates) <= tolerance {
+	if len(candidates) < tolerance {
 		return candidates
 	}
 

@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"sync"
 	"testing"
-	"time"
 
 	"tolerex/internal/server/shared"
 	pb "tolerex/proto/gen"
@@ -58,14 +57,9 @@ func startRetrieveGRPCServer(t *testing.T, srv pb.StorageServiceServer) (addr st
 func dialTestGRPC(t *testing.T, addr string) *grpc.ClientConn {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(
-		ctx,
+	conn, err := grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		t.Fatalf("dial failed for %s: %v", addr, err)
@@ -92,6 +86,7 @@ func TestRetrieve_FallbackToAllMembers_WhenMsgMapMissing(t *testing.T) {
 			"m1": {Address: "m1", Alive: false},
 			"m2": {Address: "m2", Alive: true},
 		},
+		persistSignal: make(chan struct{}, 1),
 		dialFn: func(addr string) (*grpc.ClientConn, error) {
 			mu.Lock()
 			dialed = append(dialed, addr)
@@ -163,7 +158,7 @@ func TestRetrieve_SkipsDownReplica_UsesAliveReplica(t *testing.T) {
 	}
 }
 
-func TestRetrieve_NotFound_WhenAllTargetsFail(t *testing.T) {
+func TestRetrieve_Unavailable_WhenAllTargetsFail(t *testing.T) {
 	t.Setenv("TOLEREX_TEST_MODE", "0")
 
 	var mu sync.Mutex
@@ -178,6 +173,7 @@ func TestRetrieve_NotFound_WhenAllTargetsFail(t *testing.T) {
 			"m1": {Address: "m1", Alive: true},
 			"m2": {Address: "m2", Alive: true},
 		},
+		persistSignal: make(chan struct{}, 1),
 		dialFn: func(addr string) (*grpc.ClientConn, error) {
 			mu.Lock()
 			dialed = append(dialed, addr)
@@ -191,14 +187,17 @@ func TestRetrieve_NotFound_WhenAllTargetsFail(t *testing.T) {
 		t.Fatalf("expected not found error, got res=%+v", res)
 	}
 	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.NotFound {
-		t.Fatalf("expected NotFound, got err=%v", err)
+	if !ok || st.Code() != codes.Unavailable {
+		t.Fatalf("expected Unavailable, got err=%v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if !reflect.DeepEqual(dialed, []string{"m1", "m2"}) {
 		t.Fatalf("unexpected dialed targets: got=%v want=%v", dialed, []string{"m1", "m2"})
+	}
+	if s.MemberLog["m1"].Alive || s.MemberLog["m2"].Alive {
+		t.Fatal("unreachable members should be marked unavailable")
 	}
 }
 

@@ -1,7 +1,6 @@
+name: tolerex-cluster
+
 services:
-  # ========================================
-  # LEADER NODE
-  # ========================================
   leader:
     build:
       context: ..
@@ -14,19 +13,23 @@ services:
       - LEADER_TCP_PORT=6666
       - LEADER_TCP_BIND=0.0.0.0
       - LEADER_METRICS_PORT=9090
-      - TOLEREX_ENV=docker
+      - LEADER_CERT_FILE=/run/secrets/leader_crt
+      - LEADER_KEY_FILE=/run/secrets/leader_key
+      - CA_CERT_FILE=/run/secrets/ca_crt
+      - TOLEREX_LOG_FILE=off
     ports:
-      - "6666:6666" # Client TCP Interface
-      - "5555:5555" # gRPC
-      - "9090:9090" # Metrics
+      - "6666:6666"
+      - "5555:5555"
+      - "9090:9090"
     networks:
       - tolerex-net
     volumes:
       - leader-data:/app/internal/data
+    secrets:
+      - ca_crt
+      - leader_crt
+      - leader_key
 
-  # ========================================
-  # MEMBER NODES
-  # ========================================
   member-1:
     build:
       context: ..
@@ -37,15 +40,17 @@ services:
     environment:
       - LEADER_ADDR=leader:5555
       - MEMBER_ADDR=member-1:5556
-    ports:
-      - "5556:5556"
-      - "9092:9092"
+      - MEMBER_CERT_FILE=/run/secrets/member_crt
+      - MEMBER_KEY_FILE=/run/secrets/member_key
+      - CA_CERT_FILE=/run/secrets/ca_crt
+      - TOLEREX_LOG_FILE=off
     depends_on:
       - leader
     networks:
       - tolerex-net
     volumes:
       - member1-data:/app/internal/data
+    secrets: [ca_crt, member_crt, member_key]
 
   member-2:
     build:
@@ -57,15 +62,17 @@ services:
     environment:
       - LEADER_ADDR=leader:5555
       - MEMBER_ADDR=member-2:5557
-    ports:
-      - "5557:5557"
-      - "9093:9093"
+      - MEMBER_CERT_FILE=/run/secrets/member_crt
+      - MEMBER_KEY_FILE=/run/secrets/member_key
+      - CA_CERT_FILE=/run/secrets/ca_crt
+      - TOLEREX_LOG_FILE=off
     depends_on:
       - leader
     networks:
       - tolerex-net
     volumes:
       - member2-data:/app/internal/data
+    secrets: [ca_crt, member_crt, member_key]
 
   member-3:
     build:
@@ -77,15 +84,17 @@ services:
     environment:
       - LEADER_ADDR=leader:5555
       - MEMBER_ADDR=member-3:5558
-    ports:
-      - "5558:5558"
-      - "9094:9094"
+      - MEMBER_CERT_FILE=/run/secrets/member_crt
+      - MEMBER_KEY_FILE=/run/secrets/member_key
+      - CA_CERT_FILE=/run/secrets/ca_crt
+      - TOLEREX_LOG_FILE=off
     depends_on:
       - leader
     networks:
       - tolerex-net
     volumes:
       - member3-data:/app/internal/data
+    secrets: [ca_crt, member_crt, member_key]
 
   member-4:
     build:
@@ -97,15 +106,17 @@ services:
     environment:
       - LEADER_ADDR=leader:5555
       - MEMBER_ADDR=member-4:5559
-    ports:
-      - "5559:5559"
-      - "9095:9095"
+      - MEMBER_CERT_FILE=/run/secrets/member_crt
+      - MEMBER_KEY_FILE=/run/secrets/member_key
+      - CA_CERT_FILE=/run/secrets/ca_crt
+      - TOLEREX_LOG_FILE=off
     depends_on:
       - leader
     networks:
       - tolerex-net
     volumes:
       - member4-data:/app/internal/data
+    secrets: [ca_crt, member_crt, member_key]
 
   member-5:
     build:
@@ -117,15 +128,17 @@ services:
     environment:
       - LEADER_ADDR=leader:5555
       - MEMBER_ADDR=member-5:5560
-    ports:
-      - "5560:5560"
-      - "9096:9096"
+      - MEMBER_CERT_FILE=/run/secrets/member_crt
+      - MEMBER_KEY_FILE=/run/secrets/member_key
+      - CA_CERT_FILE=/run/secrets/ca_crt
+      - TOLEREX_LOG_FILE=off
     depends_on:
       - leader
     networks:
       - tolerex-net
     volumes:
       - member5-data:/app/internal/data
+    secrets: [ca_crt, member_crt, member_key]
 
   member-6:
     build:
@@ -137,21 +150,20 @@ services:
     environment:
       - LEADER_ADDR=leader:5555
       - MEMBER_ADDR=member-6:5561
-    ports:
-      - "5561:5561"
-      - "9097:9097"
+      - MEMBER_CERT_FILE=/run/secrets/member_crt
+      - MEMBER_KEY_FILE=/run/secrets/member_key
+      - CA_CERT_FILE=/run/secrets/ca_crt
+      - TOLEREX_LOG_FILE=off
     depends_on:
       - leader
     networks:
       - tolerex-net
     volumes:
       - member6-data:/app/internal/data
-      
-  # ========================================
-  # MONITORING STACK
-  # ========================================
+    secrets: [ca_crt, member_crt, member_key]
+
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.15.1
     restart: unless-stopped
     volumes:
       - ./prometheus.cluster.yml:/etc/prometheus/prometheus.yml:ro
@@ -164,11 +176,11 @@ services:
       - tolerex-net
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.2.4
     restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
       - GF_USERS_DEFAULT_THEME=dark
       - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_DASHBOARDS_MIN_REFRESH_INTERVAL=1s
@@ -185,6 +197,18 @@ services:
 networks:
   tolerex-net:
     driver: bridge
+
+secrets:
+  ca_crt:
+    file: ../config/tls/ca.crt
+  leader_crt:
+    file: ../config/tls/leader.crt
+  leader_key:
+    file: ../config/tls/leader.key
+  member_crt:
+    file: ../config/tls/member.crt
+  member_key:
+    file: ../config/tls/member.key
 
 volumes:
   leader-data:

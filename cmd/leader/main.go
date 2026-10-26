@@ -35,8 +35,9 @@ func main() {
 	log := logger.Leader
 
 	grpcPort := getenv("LEADER_GRPC_PORT", "5555")
+	grpcAddr := net.JoinHostPort(getenv("LEADER_GRPC_BIND", ""), grpcPort)
 	tcpAddr := net.JoinHostPort(getenv("LEADER_TCP_BIND", "127.0.0.1"), getenv("LEADER_TCP_PORT", "6666"))
-	metricsAddr := ":" + getenv("LEADER_METRICS_PORT", "9090")
+	metricsAddr := net.JoinHostPort(getenv("LEADER_METRICS_BIND", ""), getenv("LEADER_METRICS_PORT", "9090"))
 
 	memberCreds, err := security.NewMTLSClientCreds(
 		getenv("LEADER_CERT_FILE", "config/tls/leader.crt"),
@@ -66,9 +67,9 @@ func main() {
 		logger.Fatal(log, "Failed to load leader server credentials: %v", err)
 	}
 
-	grpcListener, err := net.Listen("tcp", ":"+grpcPort)
+	grpcListener, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
-		logger.Fatal(log, "Failed to listen on gRPC port %s: %v", grpcPort, err)
+		logger.Fatal(log, "Failed to listen on gRPC address %s: %v", grpcAddr, err)
 	}
 	tcpListener, err := net.Listen("tcp", tcpAddr)
 	if err != nil {
@@ -104,7 +105,7 @@ func main() {
 
 	serverErr := make(chan error, 3)
 	go func() {
-		logger.Info(log, "Leader gRPC listening on :%s", grpcPort)
+		logger.Info(log, "Leader gRPC listening on %s", grpcAddr)
 		if err := grpcServer.Serve(grpcListener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			serverErr <- fmt.Errorf("gRPC server stopped: %w", err)
 		}

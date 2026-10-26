@@ -49,6 +49,8 @@ func main() {
 
 	leaderAddr := getenv("LEADER_ADDR", "localhost:5555")
 	memberAddr := getenv("MEMBER_ADDR", "localhost:"+*port)
+	grpcAddr := net.JoinHostPort(getenv("MEMBER_GRPC_BIND", ""), *port)
+	metricsAddr := net.JoinHostPort(getenv("MEMBER_METRICS_BIND", ""), *metricsPort)
 	dataDir := filepath.Join("internal", "data", "member-"+*port)
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		logger.Fatal(memberLog, "Data directory could not be created: %v", err)
@@ -63,9 +65,9 @@ func main() {
 		logger.Fatal(memberLog, "Failed to load member server credentials: %v", err)
 	}
 
-	listener, err := net.Listen("tcp", ":"+*port)
+	listener, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
-		logger.Fatal(memberLog, "Failed to listen on port %s: %v", *port, err)
+		logger.Fatal(memberLog, "Failed to listen on address %s: %v", grpcAddr, err)
 	}
 	grpcServer := grpc.NewServer(
 		grpc.Creds(serverCreds),
@@ -82,7 +84,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	metricsServer := &http.Server{
-		Addr:              ":" + *metricsPort,
+		Addr:              metricsAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -95,14 +97,14 @@ func main() {
 	serverErr := make(chan error, 2)
 
 	go func() {
-		logger.Info(memberLog, "Member gRPC listening on :%s (data=%s, io=%s)", *port, dataDir, *ioMode)
+		logger.Info(memberLog, "Member gRPC listening on %s (data=%s, io=%s)", grpcAddr, dataDir, *ioMode)
 		if err := grpcServer.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			serverErr <- err
 			cancel()
 		}
 	}()
 	go func() {
-		logger.Info(memberLog, "Metrics listening on :%s", *metricsPort)
+		logger.Info(memberLog, "Metrics listening on %s", metricsAddr)
 		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 			cancel()

@@ -236,7 +236,9 @@ func main() {
 		fmt.Sprintf(
 			"cd \"%s\"; "+
 				"$env:LEADER_GRPC_PORT='5555'; "+
+				"$env:LEADER_GRPC_BIND='127.0.0.1'; "+
 				"$env:LEADER_METRICS_PORT='9090'; "+
+				"$env:LEADER_METRICS_BIND='127.0.0.1'; "+
 				"$env:BALANCER_STRATEGY='%s'; "+
 				"go run ./cmd/leader",
 			baseDir,
@@ -263,6 +265,8 @@ func main() {
 				"cd \"%s\"; "+
 					"$env:LEADER_ADDR='localhost:5555'; "+
 					"$env:MEMBER_ADDR='localhost:%d'; "+
+					"$env:MEMBER_GRPC_BIND='127.0.0.1'; "+
+					"$env:MEMBER_METRICS_BIND='127.0.0.1'; "+
 					"go run ./cmd/member -port=%d -metrics=%d -io=%s",
 				baseDir,
 				grpcPort,

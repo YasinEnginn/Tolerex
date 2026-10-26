@@ -141,9 +141,11 @@ function Wait-Alive([int]$Expected, [int]$TimeoutSeconds = 30) {
 function Start-Leader {
     $env:BALANCER_STRATEGY = "p2c"
     $env:LEADER_GRPC_PORT = "$leaderGRPCPort"
+    $env:LEADER_GRPC_BIND = "127.0.0.1"
     $env:LEADER_TCP_PORT = "$leaderTCPPort"
     $env:LEADER_TCP_BIND = "127.0.0.1"
     $env:LEADER_METRICS_PORT = "$leaderMetricsPort"
+    $env:LEADER_METRICS_BIND = "127.0.0.1"
     $env:TOLEREX_TEST_MODE = "1"
     $env:TOLEREX_TEST_DIR = $stateDir
     $script:leader = Start-TestProcess $leaderBinary @() "leader"
@@ -154,6 +156,8 @@ function Start-Member([int]$Index) {
     $port = $memberPorts[$Index]
     $env:LEADER_ADDR = "localhost:$leaderGRPCPort"
     $env:MEMBER_ADDR = "localhost:$port"
+    $env:MEMBER_GRPC_BIND = "127.0.0.1"
+    $env:MEMBER_METRICS_BIND = "127.0.0.1"
     $process = Start-TestProcess $memberBinary @("-port=$port", "-metrics=$($memberMetricsPorts[$Index])", "-io=unbuffered") "member-$Index"
     Wait-Port $port
     $currentMembers[$Index] = $process

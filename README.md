@@ -231,14 +231,18 @@ Frequently used environment variables:
 | --- | --- | --- |
 | `BALANCER_STRATEGY` | `least_loaded` | Leader; accepts `least_loaded` or `p2c`. |
 | `LEADER_GRPC_PORT` | `5555` | Leader/member gRPC endpoint. |
+| `LEADER_GRPC_BIND` | all interfaces | Leader gRPC bind address; use `127.0.0.1` for a local-only cluster. |
 | `LEADER_TCP_BIND` | `127.0.0.1` | Client-facing bind address. |
 | `LEADER_TCP_PORT` | `6666` | Client-facing TCP port. |
 | `LEADER_METRICS_PORT` | `9090` | Leader Prometheus endpoint. |
+| `LEADER_METRICS_BIND` | all interfaces | Leader metrics bind address; use `127.0.0.1` locally. |
 | `LEADER_STATS_INTERVAL` | `0` | Terminal status refresh; use `0` or a duration such as `5s`. |
 | `LEADER_ADDR` | `localhost:5555` | Member registration/heartbeat target. |
 | `MEMBER_ADDR` | `localhost:<member-port>` | Dialable address advertised to the leader. |
 | `MEMBER_GRPC_PORT` | `5556` | Member gRPC port when `-port` is omitted. |
+| `MEMBER_GRPC_BIND` | all interfaces | Member gRPC bind address; use `127.0.0.1` for a local-only cluster. |
 | `MEMBER_METRICS_PORT` | `9092` | Member metrics port when `-metrics` is omitted. |
+| `MEMBER_METRICS_BIND` | all interfaces | Member metrics bind address; use `127.0.0.1` locally. |
 | `MEMBER_IO_MODE` | `buffered` | Member storage mode; accepts `buffered` or `unbuffered`. |
 | `TOLERANCE_CONF` | `config/tolerance.conf` | Replica configuration file. |
 | `TOLEREX_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error`. |
